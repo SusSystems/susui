@@ -3,81 +3,91 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    flake-parts.url = "github:hercules-ci/flake-parts";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs { inherit system overlays; };
+  outputs = inputs@{ self, nixpkgs, flake-parts, rust-overlay, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-src" "rust-analyzer" ];
-        };
+      perSystem = { config, self', pkgs, lib, system, ... }:
+        let
+          overlays = [ (import rust-overlay) ];
+          rustPkgs = import nixpkgs { inherit system overlays; };
 
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
-          pkg-config
-          openssl
-        ];
+          rustToolchain = rustPkgs.rust-bin.stable.latest.default.override {
+            extensions = [ "rust-src" "rust-analyzer" ];
+          };
 
-        buildInputs = with pkgs; [
-          openssl
-        ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-          pkgs.darwin.apple_sdk.frameworks.Security
-          pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-        ];
-      in
-      {
-        packages = {
-          default = pkgs.rustPlatform.buildRustPackage {
+          nativeBuildInputs = [
+            rustPkgs.pkg-config
+            rustPkgs.openssl
+          ];
+
+          buildInputs = [
+            rustPkgs.openssl
+          ] ++ lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.darwin.apple_sdk.frameworks.Security
+            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+          ];
+
+          susui = rustPkgs.rustPlatform.buildRustPackage {
             pname = "susui";
             version = "0.1.0";
-            src = ./.;
+            src = lib.cleanSource ./.;
             cargoLock.lockFile = ./Cargo.lock;
 
             inherit nativeBuildInputs buildInputs;
 
-            meta = with pkgs.lib; {
+            meta = {
               description = "sus ui — nix build dashboard";
               homepage = "https://github.com/SusSystems/susui";
-              license = licenses.mit;
+              license = lib.licenses.mit;
               mainProgram = "susui";
             };
           };
-        };
+        in
+        {
+          packages = {
+            default = susui;
+            susui = susui;
+          };
 
-        devShells.default = pkgs.mkShell {
-          inherit nativeBuildInputs buildInputs;
+          devShells.default = rustPkgs.mkShell {
+            nativeBuildInputs = nativeBuildInputs ++ [ rustToolchain ];
+            inherit buildInputs;
 
-          shellHook = ''
-            echo "╭─ sus ui dev shell ──────────╮"
-            echo "│  cargo build    — build      │"
-            echo "│  cargo run      — run         │"
-            echo "│  cargo test     — test        │"
-            echo "│  susui serve .  — dashboard   │"
-            echo "╰──────────────────────────────╯"
-          '';
-        };
+            RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
 
-        checks = {
-          clippy = pkgs.rustPlatform.buildRustPackage {
-            pname = "susui-clippy";
-            version = "0.1.0";
-            src = ./.;
-            cargoLock.lockFile = ./Cargo.lock;
-            inherit nativeBuildInputs buildInputs;
-            buildPhase = ''
-              cargo clippy -- -D warnings
+            shellHook = ''
+              echo "╭─ sus ui dev shell ──────────╮"
+              echo "│  cargo build    — build      │"
+              echo "│  cargo run      — run         │"
+              echo "│  cargo test     — test        │"
+              echo "│  susui serve .  — dashboard   │"
+              echo "╰──────────────────────────────╯"
             '';
-            installPhase = "mkdir -p $out";
+          };
+
+          checks = {
+            inherit susui;
+
+            clippy = rustPkgs.rustPlatform.buildRustPackage {
+              pname = "susui-clippy";
+              version = "0.1.0";
+              src = lib.cleanSource ./.;
+              cargoLock.lockFile = ./Cargo.lock;
+              inherit nativeBuildInputs buildInputs;
+              buildPhase = ''
+                cargo clippy -- -D warnings
+              '';
+              installPhase = "mkdir -p $out";
+            };
           };
         };
-      }
-    );
+    };
 }
