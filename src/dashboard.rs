@@ -4,6 +4,15 @@ pub fn dashboard_html(builds_json: &str, meta_json: &str) -> String {
     DASHBOARD_TEMPLATE
         .replace("\"__BUILDS_DATA__\"", builds_json)
         .replace("\"__META_DATA__\"", meta_json)
+        .replace("__STATIC_MODE__", "false")
+}
+
+/// Returns the dashboard HTML for static site generation (no auto-refresh).
+pub fn static_dashboard_html(builds_json: &str, meta_json: &str) -> String {
+    DASHBOARD_TEMPLATE
+        .replace("\"__BUILDS_DATA__\"", builds_json)
+        .replace("\"__META_DATA__\"", meta_json)
+        .replace("__STATIC_MODE__", "true")
 }
 
 const DASHBOARD_TEMPLATE: &str = r##"<!DOCTYPE html>
@@ -24,6 +33,7 @@ const html = htm.bind(h);
 // ─── LIVE DATA ─────────────────────────────────────────────
 const BUILDS_DATA = "__BUILDS_DATA__";
 const META_DATA = "__META_DATA__";
+const STATIC_MODE = __STATIC_MODE__;
 
 // ─── DESIGN TOKENS ──────────────────────────────────────────
 const T = {
@@ -438,8 +448,9 @@ function App() {
   const [builds, setBuilds] = useState(BUILDS_DATA);
   const [meta, setMeta] = useState(META_DATA);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 30s (disabled in static mode)
   useEffect(() => {
+    if (STATIC_MODE) return;
     const interval = setInterval(async () => {
       try {
         const r = await fetch("/api/builds");
@@ -528,7 +539,10 @@ function App() {
           </div>
           <div style=${{ fontSize: 10, color: T.color.textTertiary, lineHeight: 1.5 }}>Hover any element to see the nix, git, and shell commands used to source its data.</div>
         </div>
-        <div style=${{ padding: "12px 8px", borderTop: "1px solid " + T.color.border, fontSize: T.fontSize.xs, color: T.color.textTertiary, lineHeight: 1.6 }}>Built with precision.<br />柵 — cut clean, ship fast.</div>
+        <div style=${{ padding: "12px 8px", borderTop: "1px solid " + T.color.border, fontSize: T.fontSize.xs, color: T.color.textTertiary, lineHeight: 1.6 }}>
+          ${STATIC_MODE && html`<div style=${{ padding: "4px 8px", marginBottom: 8, background: T.color.pending400 + "12", border: "1px solid " + T.color.pending400 + "20", borderRadius: T.radius.sm, fontSize: 10, fontFamily: T.font.mono, color: T.color.pending400 }}>● Static snapshot</div>`}
+          Built with precision.<br />柵 — cut clean, ship fast.
+        </div>
       </nav>
       <main style=${{ marginLeft: 240, flex: 1, padding: "48px 56px", maxWidth: 960 }}>
         <div class="animate-in" style=${{ marginBottom: 32 }}>

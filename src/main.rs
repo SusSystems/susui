@@ -1,5 +1,7 @@
 mod collector;
+mod config;
 mod dashboard;
+mod github;
 mod models;
 
 use anyhow::Result;
@@ -19,6 +21,10 @@ use std::sync::{Arc, Mutex};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Path to susui.yaml config file
+    #[arg(long, global = true)]
+    config: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -61,6 +67,25 @@ enum Commands {
         bind: String,
     },
 
+    /// Generate a static HTML dashboard for GitHub Pages
+    Generate {
+        /// Flake reference to scan
+        #[arg(default_value = ".")]
+        flake_ref: String,
+
+        /// Output directory
+        #[arg(short, long, default_value = "_site")]
+        output: String,
+
+        /// Only evaluate (dry-run), don't build
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Base path for GitHub Pages (e.g. "/susui" for project pages)
+        #[arg(long, default_value = "/")]
+        base_path: String,
+    },
+
     /// Show flake metadata and inputs
     Info {
         /// Flake reference
@@ -90,6 +115,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Push build status to GitHub (commit statuses or check runs)
+    PushStatus {
+        /// Flake reference
+        #[arg(default_value = ".")]
+        flake_ref: String,
+
+        /// Only evaluate (dry-run), don't build
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -110,6 +150,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let cfg = config::Config::load_or_default(cli.config.as_deref());
 
     match cli.command {
         Commands::Scan {
@@ -117,7 +158,7 @@ async fn main() -> Result<()> {
             dry_run,
             json,
             r#override,
-        } => cmd_scan(&flake_ref, dry_run, json, &r#override),
+        } => cmd_scan(&flake_ref, dry_run, json, &r#override, &cfg),
 
         Commands::Serve {
             flake_ref,
@@ -125,6 +166,13 @@ async fn main() -> Result<()> {
             dry_run,
             bind,
         } => cmd_serve(&flake_ref, port, dry_run, &bind).await,
+
+        Commands::Generate {
+            flake_ref,
+            output,
+            dry_run,
+            base_path,
+        } => cmd_generate(&flake_ref, &output, dry_run, &base_path, &cfg),
 
         Commands::Info { flake_ref, json } => cmd_info(&flake_ref, json),
 
@@ -134,10 +182,22 @@ async fn main() -> Result<()> {
             r#override,
             json,
         } => cmd_build(&flake_ref, &attr, &r#override, json),
+
+        Commands::PushStatus {
+            flake_ref,
+            dry_run,
+            json,
+        } => cmd_push_status(&flake_ref, dry_run, json, &cfg).await,
     }
 }
 
-fn cmd_scan(flake_ref: &str, dry_run: bool, json_output: bool, _overrides: &[String]) -> Result<()> {
+fn cmd_scan(
+    flake_ref: &str,
+    dry_run: bool,
+    json_output: bool,
+    _overrides: &[String],
+    _cfg: &config::Config,
+) -> Result<()> {
     let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
     let stats = BuildStats::from_builds(&builds);
 
@@ -190,7 +250,6 @@ fn cmd_scan(flake_ref: &str, dry_run: bool, json_output: bool, _overrides: &[Str
         println!("╰───────────────────────────────────────────────╯");
     }
 
-    // Exit with non-zero if any builds failed
     if stats.failed > 0 {
         std::process::exit(1);
     }
@@ -200,7 +259,6 @@ fn cmd_scan(flake_ref: &str, dry_run: bool, json_output: bool, _overrides: &[Str
 async fn cmd_serve(flake_ref: &str, port: u16, dry_run: bool, bind: &str) -> Result<()> {
     tracing::info!(flake_ref, port, "Starting sus ui dashboard");
 
-    // Initial data collection
     let (metadata, builds) = match collector::collect_all(flake_ref, dry_run) {
         Ok(data) => data,
         Err(e) => {
@@ -245,6 +303,126 @@ async fn cmd_serve(flake_ref: &str, port: u16, dry_run: bool, bind: &str) -> Res
     println!("╰────────────────────────────────────────╯");
 
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn cmd_generate(
+    flake_ref: &str,
+    output_dir: &str,
+    dry_run: bool,
+    base_path: &str,
+    _cfg: &config::Config,
+) -> Result<()> {
+    tracing::info!(flake_ref, output_dir, "Generating static dashboard");
+
+    let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
+    let stats = BuildStats::from_builds(&builds);
+
+    let builds_json = serde_json::to_string(&builds)?;
+    let meta_json = serde_json::to_string(&Some(&metadata))?;
+
+    // Generate the static HTML (with API polling disabled)
+    let html_content = dashboard::static_dashboard_html(&builds_json, &meta_json);
+
+    // Create output directory
+    std::fs::create_dir_all(output_dir)?;
+
+    // Write index.html
+    let index_path = std::path::Path::new(output_dir).join("index.html");
+    std::fs::write(&index_path, &html_content)?;
+
+    // Write .nojekyll for GitHub Pages
+    let nojekyll_path = std::path::Path::new(output_dir).join(".nojekyll");
+    std::fs::write(&nojekyll_path, "")?;
+
+    // Write API JSON files for optional static hosting
+    let api_dir = std::path::Path::new(output_dir).join("api");
+    std::fs::create_dir_all(&api_dir)?;
+
+    std::fs::write(
+        api_dir.join("builds.json"),
+        serde_json::to_string_pretty(&ApiResponse::success(&builds))?,
+    )?;
+    std::fs::write(
+        api_dir.join("stats.json"),
+        serde_json::to_string_pretty(&ApiResponse::success(stats))?,
+    )?;
+    std::fs::write(
+        api_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&ApiResponse::success(&metadata))?,
+    )?;
+
+    // Write CNAME if base_path is a custom domain
+    if base_path.contains('.') && !base_path.starts_with('/') {
+        std::fs::write(
+            std::path::Path::new(output_dir).join("CNAME"),
+            base_path,
+        )?;
+    }
+
+    println!("╭─ sus ui · static site generated ──────────────╮");
+    println!("│                                                │");
+    println!("│  Output: {:<38}│", output_dir);
+    println!("│  Builds: {:<38}│", builds.len());
+    println!("│                                                │");
+    println!("│  Files:                                        │");
+    println!("│    index.html      — dashboard                 │");
+    println!("│    .nojekyll       — disable Jekyll             │");
+    println!("│    api/builds.json — build data                │");
+    println!("│    api/stats.json  — aggregated stats          │");
+    println!("│    api/metadata.json — flake metadata          │");
+    println!("│                                                │");
+    println!("│  Deploy:                                       │");
+    println!("│    gh-pages branch or GitHub Actions            │");
+    println!("│                                                │");
+    println!("╰────────────────────────────────────────────────╯");
+
+    Ok(())
+}
+
+async fn cmd_push_status(
+    flake_ref: &str,
+    dry_run: bool,
+    json_output: bool,
+    cfg: &config::Config,
+) -> Result<()> {
+    if cfg.status_push.is_empty() {
+        anyhow::bail!(
+            "No status_push targets configured. Add them to susui.yaml:\n\
+             \n\
+             status_push:\n\
+             \x20 - input: src\n\
+             \x20   type: github\n\
+             \x20   owner: my-org\n\
+             \x20   repo: my-app\n\
+             \x20   method: commit_status\n\
+             \x20   context: nix-build/local"
+        );
+    }
+
+    let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
+    let revisions = github::extract_input_revisions(&metadata.inputs);
+
+    let results = github::push_status(&cfg.status_push, &builds, &revisions).await;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        for r in &results {
+            let icon = if r.success { "✓" } else { "✕" };
+            println!(
+                "  {} {} → {} ({})",
+                icon,
+                &r.sha[..7.min(r.sha.len())],
+                r.target,
+                r.state
+            );
+            if let Some(err) = &r.error {
+                println!("    error: {}", err);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -314,7 +492,12 @@ fn cmd_info(flake_ref: &str, json_output: bool) -> Result<()> {
         }
         println!("├─ Inputs ──────────────────────────────────────┤");
         for input in &metadata.inputs {
-            println!("│  {} ({}) → {}", input.name, input.input_type, truncate(&input.url, 30));
+            println!(
+                "│  {} ({}) → {}",
+                input.name,
+                input.input_type,
+                truncate(&input.url, 30)
+            );
             if let Some(rev) = &input.locked_rev {
                 println!("│    locked: {}", &rev[..12.min(rev.len())]);
             }
@@ -347,7 +530,10 @@ fn cmd_build(flake_ref: &str, attr: &str, overrides: &[String], json_output: boo
             BuildStatus::Failed => "✕",
             _ => "?",
         };
-        println!("{} {} — {} ({})", icon, build.derivation, build.status, build.duration);
+        println!(
+            "{} {} — {} ({})",
+            icon, build.derivation, build.status, build.duration
+        );
         if !build.log.is_empty() {
             println!("── log ──");
             for line in &build.log {
