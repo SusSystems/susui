@@ -272,19 +272,8 @@ pub fn build_derivation(
     let duration = format_duration(elapsed);
     let combined_output = format!("{}{}", stdout, stderr);
 
-    // Parse log lines
-    let log_lines: Vec<LogLine> = combined_output
-        .lines()
-        .enumerate()
-        .map(|(i, line)| {
-            let level = classify_log_line(line);
-            LogLine {
-                n: i + 1,
-                text: line.to_string(),
-                level,
-            }
-        })
-        .collect();
+    // Parse log lines, filtering nix noise
+    let log_lines = make_log_lines(&combined_output);
 
     // Get git info from the working directory
     let dir = if flake_ref == "." || flake_ref.starts_with("./") || flake_ref.starts_with('/') {
@@ -335,27 +324,27 @@ pub fn build_derivation(
     }
 }
 
-/// Evaluate a derivation (dry-run) and return a Build record
+/// Evaluate a derivation (dry-run) and return a Build record.
+///
+/// Uses `nix path-info --derivation` which only needs to evaluate the
+/// nix expression — it does NOT require the full dependency closure to be
+/// present in the store, so it works reliably in minimal / container
+/// environments where `nix build --dry-run` would fail with missing .drv
+/// errors.
 pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
 
     let start = Instant::now();
-    let (success, stdout, stderr) = run_cmd_full(&nix, &["build", &target, "--dry-run"]);
+    let (success, stdout, stderr) = run_cmd_full(&nix, &["path-info", "--derivation", &target]);
     let elapsed = start.elapsed();
 
     let duration = format_duration(elapsed);
-    let combined = format!("{}{}", stdout, stderr);
 
-    let log_lines: Vec<LogLine> = combined
-        .lines()
-        .enumerate()
-        .map(|(i, line)| LogLine {
-            n: i + 1,
-            text: line.to_string(),
-            level: classify_log_line(line),
-        })
-        .collect();
+    // The derivation store path is the meaningful output
+    let drv_path = stdout.trim().to_string();
+    let combined = format!("{}{}", stdout, stderr);
+    let log_lines = make_log_lines(&combined);
 
     let dir = if flake_ref.starts_with('.') || flake_ref.starts_with('/') {
         flake_ref.to_string()
@@ -367,10 +356,14 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
     let (owner, repo) = git_remote_info(&dir);
 
+    // If we got a .drv path back, the evaluation succeeded even if
+    // the exit code was non-zero due to stderr warnings.
+    let eval_ok = success || drv_path.starts_with("/nix/store/");
+
     Build {
         id,
         derivation: attr.to_string(),
-        status: if success {
+        status: if eval_ok {
             BuildStatus::Passed
         } else {
             BuildStatus::Failed
@@ -420,6 +413,46 @@ pub fn collect_all(flake_ref: &str, dry_run: bool) -> Result<(FlakeMetadata, Vec
 }
 
 // ─── Helpers ──────────────────────────────────────────────
+
+/// Lines from nix stderr that are infrastructure noise, not build output.
+/// These get emitted by the nix daemon/store layer and have nothing to do
+/// with the derivation being evaluated or built.
+fn is_nix_noise(line: &str) -> bool {
+    let l = line.trim();
+    if l.is_empty() {
+        return true;
+    }
+    // Daemon/store infrastructure warnings
+    if l.contains("the group 'nixbld' specified in 'build-users-group' does not exist") {
+        return true;
+    }
+    if l.starts_with("error (ignored):") && l.contains("opening file '/nix/store/") {
+        return true;
+    }
+    // Flake lock chatter
+    if l.starts_with("warning: updating lock file") || l.starts_with("warning: not writing modified lock file") {
+        return true;
+    }
+    // Git fetch noise
+    if l.starts_with("unpacking '") && l.contains("into the Git cache") {
+        return true;
+    }
+    false
+}
+
+/// Build log lines from raw output, filtering out nix infrastructure noise
+fn make_log_lines(output: &str) -> Vec<LogLine> {
+    output
+        .lines()
+        .filter(|line| !is_nix_noise(line))
+        .enumerate()
+        .map(|(i, line)| LogLine {
+            n: i + 1,
+            text: line.to_string(),
+            level: classify_log_line(line),
+        })
+        .collect()
+}
 
 fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
@@ -499,6 +532,32 @@ mod tests {
         assert_eq!(o.unwrap(), "NixOS");
         assert_eq!(r.unwrap(), "nixpkgs");
         assert_eq!(rf.unwrap(), "main");
+    }
+
+    #[test]
+    fn test_is_nix_noise() {
+        assert!(is_nix_noise("warning: the group 'nixbld' specified in 'build-users-group' does not exist"));
+        assert!(is_nix_noise("error (ignored): opening file '/nix/store/rbfgknm995x1rwpnmsn1d0c792r257hz-stdenv-linux.drv': No such file or directory"));
+        assert!(is_nix_noise("unpacking 'github:NixOS/nixpkgs/abc123' into the Git cache..."));
+        assert!(is_nix_noise(""));
+        assert!(is_nix_noise("   "));
+        // Real output should NOT be filtered
+        assert!(!is_nix_noise("error: build failed"));
+        assert!(!is_nix_noise("/nix/store/abc-susui-0.1.0.drv"));
+        assert!(!is_nix_noise("building '/nix/store/abc.drv'..."));
+    }
+
+    #[test]
+    fn test_make_log_lines_filters_noise() {
+        let output = "\
+warning: the group 'nixbld' specified in 'build-users-group' does not exist
+/nix/store/kgx2sg81s17x59a7h0ng5mzvj4v1rqm3-susui-0.1.0.drv
+error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or directory
+";
+        let lines = make_log_lines(output);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].text.contains("susui-0.1.0.drv"));
+        assert_eq!(lines[0].n, 1);
     }
 
     #[test]
