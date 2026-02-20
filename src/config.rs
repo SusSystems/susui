@@ -160,25 +160,25 @@ fn rule_matches(rule: &FilterRule, inputs: &[ResolvedInput]) -> bool {
 
             match rule.input_type.as_str() {
                 "github" => {
-                    let owner_match = rule.owner.as_ref().map_or(true, |o| {
-                        resolved.owner.as_ref().map_or(false, |ro| ro == o)
+                    let owner_match = rule.owner.as_ref().is_none_or(|o| {
+                        resolved.owner.as_ref() == Some(o)
                     });
-                    let repo_match = rule.repo.as_ref().map_or(true, |r| {
-                        resolved.repo.as_ref().map_or(false, |rr| rr == r)
+                    let repo_match = rule.repo.as_ref().is_none_or(|r| {
+                        resolved.repo.as_ref() == Some(r)
                     });
                     if owner_match && repo_match {
                         return true;
                     }
                 }
                 "git" => {
-                    let host_match = rule.host.as_ref().map_or(true, |h| {
-                        resolved.host.as_ref().map_or(false, |rh| rh == h)
+                    let host_match = rule.host.as_ref().is_none_or(|h| {
+                        resolved.host.as_ref() == Some(h)
                     });
-                    let org_match = rule.org.as_ref().map_or(true, |o| {
-                        resolved.owner.as_ref().map_or(false, |ro| ro == o)
+                    let org_match = rule.org.as_ref().is_none_or(|o| {
+                        resolved.owner.as_ref() == Some(o)
                     });
-                    let repo_match = rule.repo.as_ref().map_or(true, |r| {
-                        resolved.repo.as_ref().map_or(false, |rr| rr == r)
+                    let repo_match = rule.repo.as_ref().is_none_or(|r| {
+                        resolved.repo.as_ref() == Some(r)
                     });
                     if host_match && org_match && repo_match {
                         return true;
