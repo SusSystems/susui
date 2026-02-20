@@ -242,7 +242,10 @@ pub fn collect_flake_metadata(flake_ref: &str) -> Result<FlakeMetadata> {
     parse_flake_metadata(&output)
 }
 
-/// Build a single derivation and return a Build record
+/// Build a single derivation and return a Build record.
+/// NOTE: This function is retained for testing purposes. The CLI never invokes
+/// builds directly — it only evaluates and introspects the nix store.
+#[allow(dead_code)]
 pub fn build_derivation(
     flake_ref: &str,
     attr: &str,
@@ -600,8 +603,8 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
         .collect()
 }
 
-/// Scan a flake and return builds for all discovered outputs
-pub fn scan_flake(flake_ref: &str, dry_run: bool) -> Result<Vec<Build>> {
+/// Scan a flake and return builds for all discovered outputs (evaluation only, no builds triggered)
+pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
     let nix = nix_bin();
     tracing::info!(flake_ref, "Scanning flake outputs");
 
@@ -613,21 +616,17 @@ pub fn scan_flake(flake_ref: &str, dry_run: bool) -> Result<Vec<Build>> {
     let mut builds = Vec::new();
     for (i, attr) in outputs.iter().enumerate() {
         tracing::info!(attr, "Processing derivation");
-        let build = if dry_run {
-            eval_derivation(flake_ref, attr, (i + 1) as u64)
-        } else {
-            build_derivation(flake_ref, attr, &[], (i + 1) as u64)
-        };
+        let build = eval_derivation(flake_ref, attr, (i + 1) as u64);
         builds.push(build);
     }
 
     Ok(builds)
 }
 
-/// Collect all data for a flake: metadata + builds
-pub fn collect_all(flake_ref: &str, dry_run: bool) -> Result<(FlakeMetadata, Vec<Build>)> {
+/// Collect all data for a flake: metadata + builds (evaluation only, no builds triggered)
+pub fn collect_all(flake_ref: &str) -> Result<(FlakeMetadata, Vec<Build>)> {
     let metadata = collect_flake_metadata(flake_ref)?;
-    let builds = scan_flake(flake_ref, dry_run)?;
+    let builds = scan_flake(flake_ref)?;
     Ok((metadata, builds))
 }
 

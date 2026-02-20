@@ -290,7 +290,7 @@ function OverridePill({ inputName, type, owner, repo, ref: gitRef, pr, flakeRef 
   const short = (gitRef && gitRef.length > 12) ? gitRef.slice(0, 7) : gitRef;
   const flakeInputUri = isGH ? "github:" + owner + "/" + repo + "/" + gitRef : gitRef;
   const hintCmds = [
-    { label: "Apply this override", cmd: "nix build " + (flakeRef || ".") + " --override-input " + inputName + " " + flakeInputUri, source: "nix" },
+    { label: "Reproduce with this override", cmd: "nix build " + (flakeRef || ".") + " --override-input " + inputName + " " + flakeInputUri, source: "nix" },
     { label: "Inspect original input", cmd: "nix flake metadata " + (flakeRef || ".") + " --json | jq '.locks.nodes.\"" + inputName + "\"'", source: "nix" },
   ];
   if (isGH) hintCmds.push({ label: "Fetch commit info", cmd: "gh api repos/" + owner + "/" + repo + "/commits/" + (gitRef || "HEAD") + " --jq '.sha, .commit.message'", source: "github" });
@@ -335,7 +335,7 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
   ).join("");
 
   const statusHint = [
-    { label: "Build & check exit code", cmd: "nix build " + flakeTarget + overrideArgs + "\necho $?", source: "nix" },
+    { label: "Reproduce this build", cmd: "nix build " + flakeTarget + overrideArgs + "\necho $?", source: "nix" },
     { label: "Evaluate without building", cmd: "nix eval " + flakeTarget + " --raw 2>&1", source: "nix" },
   ];
   const derivationHint = [
@@ -349,15 +349,15 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
     { label: "Commit details", cmd: "git log -1 --format='%H%n%s%n%an%n%ai' " + shortSha, source: "git" },
   ];
   const durationHint = [
-    { label: "Build with timing", cmd: "time nix build " + flakeTarget + overrideArgs, source: "shell" },
+    { label: "Reproduce with timing", cmd: "time nix build " + flakeTarget + overrideArgs, source: "shell" },
   ];
   const logHintCmds = [
     { label: "Retrieve build log", cmd: "nix log " + flakeTarget, source: "nix" },
     { label: "Stream log during build", cmd: "nix build " + flakeTarget + overrideArgs + " -L 2>&1", source: "nix" },
   ];
   const nixCmdHintCmds = [
-    { label: "Full build command", cmd: "nix build " + flakeTarget + overrideArgs, source: "nix" },
-    { label: "Dry-run", cmd: "nix build " + flakeTarget + overrideArgs + " --dry-run 2>&1", source: "nix" },
+    { label: "Reproduce this build", cmd: "nix build " + flakeTarget + overrideArgs, source: "nix" },
+    { label: "Dry-run (preview plan)", cmd: "nix build " + flakeTarget + overrideArgs + " --dry-run 2>&1", source: "nix" },
   ];
   const flakeRefHint = [
     { label: "Flake metadata", cmd: "nix flake metadata " + build.flakeRef + " --json", source: "nix" },
@@ -412,7 +412,7 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
               </div>
             </div>
           `}
-          <${DataHint} commands=${nixCmdHintCmds} position="below" notes="The exact nix command invocation for this build.">
+          <${DataHint} commands=${nixCmdHintCmds} position="below" notes="Run this command to reproduce the build. susui does not trigger builds.">
             <div style=${{ padding: "10px 12px", background: T.color.surface0, borderRadius: T.radius.sm, border: "1px solid " + T.color.borderSubtle, marginBottom: 12, overflowX: "auto", width: "100%" }}>
               <div style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textSecondary, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
                 <span style=${{ color: T.color.textTertiary }}>$ </span>
@@ -551,7 +551,7 @@ function App() {
             <h1 style=${{ fontSize: T.fontSize["2xl"], fontWeight: 600, letterSpacing: "-0.02em", color: T.color.textPrimary, fontFamily: T.font.display }}>Nix Builds</h1>
           </div>
           <p style=${{ fontSize: T.fontSize.base, color: T.color.textSecondary, marginLeft: 13, maxWidth: 540 }}>
-            All flake builds, derivations, override inputs, and evaluation logs. Hover any element for data source commands.
+            All flake builds, derivations, override inputs, and evaluation logs. Hover any element for data source commands. This dashboard is read-only — it inspects nix store results but does not trigger builds.
           </p>
         </div>
         <div class="animate-in stagger-1" style=${{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap" }}>

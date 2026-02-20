@@ -2,14 +2,15 @@
 
 A Rust CLI tool and web dashboard for inspecting Nix flake builds, derivation status, override inputs, and build logs. Supports live web dashboard, static site generation for GitHub Pages, and GitHub status push.
 
+**sus ui is read-only** — it evaluates and introspects the nix store to show build results but never triggers builds itself. Commands shown in the dashboard are informational, allowing you to reproduce builds manually if needed.
+
 ## Features
 
-- **Scan** — discover all flake outputs and evaluate/build them
+- **Scan** — discover all flake outputs and evaluate them (no builds triggered)
 - **Serve** — live web dashboard with auto-refresh
 - **Generate** — static HTML dashboard for GitHub Pages (no Jekyll)
 - **Info** — inspect flake metadata and resolved inputs
-- **Build** — build individual derivations with overrides
-- **Push Status** — push build results to GitHub as commit statuses or check runs
+- **Push Status** — push build results to GitHub as commit statuses or check runs using nix store context
 
 ## Quick Start
 
@@ -27,10 +28,7 @@ cargo install --path .
 # Show flake metadata and inputs
 susui info .
 
-# Scan all outputs (dry-run)
-susui scan . --dry-run
-
-# Scan and actually build
+# Scan all outputs (evaluates derivations, introspects store)
 susui scan .
 
 # Start live dashboard
@@ -39,11 +37,7 @@ susui serve . --port 3000
 # Generate static site for GitHub Pages
 susui generate . --output _site
 
-# Build a specific derivation with overrides
-susui build . --attr packages.x86_64-linux.default \
-  --override src=github:my-org/my-app/feat-branch
-
-# Push build status to GitHub
+# Push build status to GitHub (uses nix store context, no builds triggered)
 susui push-status . --config susui.yaml
 ```
 
@@ -52,7 +46,7 @@ susui push-status . --config susui.yaml
 Generate a self-contained HTML dashboard that can be deployed to GitHub Pages:
 
 ```bash
-susui generate . --output _site --dry-run
+susui generate . --output _site
 ```
 
 This creates:
@@ -66,7 +60,7 @@ Deploy with GitHub Actions:
 
 ```yaml
 - name: Generate dashboard
-  run: susui generate . --output _site --dry-run
+  run: susui generate . --output _site
 - name: Deploy to Pages
   uses: peaceiris/actions-gh-pages@v3
   with:
@@ -95,7 +89,7 @@ filters:
       owner: my-org
       repo: experiments
 
-# GitHub status push — report build results to PRs
+# GitHub status push — report build results to PRs (uses nix store context)
 status_push:
   - input: src
     type: github
@@ -122,7 +116,7 @@ Filters control which builds appear on the dashboard based on resolved flake inp
 
 ### Status Push
 
-Push build results to GitHub as commit statuses or check runs. Requires `GITHUB_TOKEN` environment variable with appropriate permissions:
+Push build results to GitHub as commit statuses or check runs. Status is derived from nix store evaluation context — no builds are triggered by this command. Requires `GITHUB_TOKEN` environment variable with appropriate permissions:
 
 | Method | Required Permission |
 |--------|---------------------|
@@ -131,7 +125,7 @@ Push build results to GitHub as commit statuses or check runs. Requires `GITHUB_
 
 ## Data Source Hints
 
-The dashboard includes interactive data source hints — hover any element to see the exact `nix`, `git`, and shell commands used to source that data. This makes the dashboard both a build monitor and a learning tool for Nix introspection.
+The dashboard includes interactive data source hints — hover any element to see the exact `nix`, `git`, and shell commands used to source that data. These commands are informational, showing how to reproduce or inspect the data yourself. sus ui never triggers builds.
 
 ## Building with Nix
 

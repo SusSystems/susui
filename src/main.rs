@@ -29,26 +29,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan a nix flake and display build information
+    /// Scan a nix flake and display build information (evaluation only, no builds triggered)
     Scan {
         /// Flake reference (e.g. ".", "github:owner/repo", "/path/to/flake")
         #[arg(default_value = ".")]
         flake_ref: String,
 
-        /// Only evaluate (dry-run), don't actually build
-        #[arg(long)]
-        dry_run: bool,
-
         /// Output as JSON
         #[arg(long)]
         json: bool,
-
-        /// Include overrides (name=flake-uri pairs)
-        #[arg(long, value_name = "NAME=URI")]
-        r#override: Vec<String>,
     },
 
-    /// Start the web dashboard
+    /// Start the web dashboard (read-only, no builds triggered)
     Serve {
         /// Flake reference to monitor
         #[arg(default_value = ".")]
@@ -58,16 +50,12 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
 
-        /// Only evaluate, don't build
-        #[arg(long)]
-        dry_run: bool,
-
         /// Bind address
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
     },
 
-    /// Generate a static HTML dashboard for GitHub Pages
+    /// Generate a static HTML dashboard for GitHub Pages (no builds triggered)
     Generate {
         /// Flake reference to scan
         #[arg(default_value = ".")]
@@ -76,10 +64,6 @@ enum Commands {
         /// Output directory
         #[arg(short, long, default_value = "_site")]
         output: String,
-
-        /// Only evaluate (dry-run), don't build
-        #[arg(long)]
-        dry_run: bool,
 
         /// Base path for GitHub Pages (e.g. "/susui" for project pages)
         #[arg(long, default_value = "/")]
@@ -97,34 +81,11 @@ enum Commands {
         json: bool,
     },
 
-    /// Build a specific derivation
-    Build {
-        /// Flake reference
-        #[arg(default_value = ".")]
-        flake_ref: String,
-
-        /// Derivation attribute path
-        #[arg(short, long)]
-        attr: String,
-
-        /// Override inputs (name=flake-uri pairs)
-        #[arg(long, value_name = "NAME=URI")]
-        r#override: Vec<String>,
-
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Push build status to GitHub (commit statuses or check runs)
+    /// Push build status to GitHub using nix store context (no builds triggered)
     PushStatus {
         /// Flake reference
         #[arg(default_value = ".")]
         flake_ref: String,
-
-        /// Only evaluate (dry-run), don't build
-        #[arg(long)]
-        dry_run: bool,
 
         /// Output as JSON
         #[arg(long)]
@@ -155,50 +116,36 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Scan {
             flake_ref,
-            dry_run,
             json,
-            r#override,
-        } => cmd_scan(&flake_ref, dry_run, json, &r#override, &cfg),
+        } => cmd_scan(&flake_ref, json, &cfg),
 
         Commands::Serve {
             flake_ref,
             port,
-            dry_run,
             bind,
-        } => cmd_serve(&flake_ref, port, dry_run, &bind).await,
+        } => cmd_serve(&flake_ref, port, &bind).await,
 
         Commands::Generate {
             flake_ref,
             output,
-            dry_run,
             base_path,
-        } => cmd_generate(&flake_ref, &output, dry_run, &base_path, &cfg),
+        } => cmd_generate(&flake_ref, &output, &base_path, &cfg),
 
         Commands::Info { flake_ref, json } => cmd_info(&flake_ref, json),
 
-        Commands::Build {
-            flake_ref,
-            attr,
-            r#override,
-            json,
-        } => cmd_build(&flake_ref, &attr, &r#override, json),
-
         Commands::PushStatus {
             flake_ref,
-            dry_run,
             json,
-        } => cmd_push_status(&flake_ref, dry_run, json, &cfg).await,
+        } => cmd_push_status(&flake_ref, json, &cfg).await,
     }
 }
 
 fn cmd_scan(
     flake_ref: &str,
-    dry_run: bool,
     json_output: bool,
-    _overrides: &[String],
     _cfg: &config::Config,
 ) -> Result<()> {
-    let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
+    let (metadata, builds) = collector::collect_all(flake_ref)?;
     let stats = BuildStats::from_builds(&builds);
 
     if json_output {
@@ -256,10 +203,10 @@ fn cmd_scan(
     Ok(())
 }
 
-async fn cmd_serve(flake_ref: &str, port: u16, dry_run: bool, bind: &str) -> Result<()> {
+async fn cmd_serve(flake_ref: &str, port: u16, bind: &str) -> Result<()> {
     tracing::info!(flake_ref, port, "Starting sus ui dashboard");
 
-    let (metadata, builds) = match collector::collect_all(flake_ref, dry_run) {
+    let (metadata, builds) = match collector::collect_all(flake_ref) {
         Ok(data) => data,
         Err(e) => {
             tracing::warn!("Initial scan failed: {}. Starting with empty data.", e);
@@ -309,13 +256,12 @@ async fn cmd_serve(flake_ref: &str, port: u16, dry_run: bool, bind: &str) -> Res
 fn cmd_generate(
     flake_ref: &str,
     output_dir: &str,
-    dry_run: bool,
     base_path: &str,
     _cfg: &config::Config,
 ) -> Result<()> {
     tracing::info!(flake_ref, output_dir, "Generating static dashboard");
 
-    let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
+    let (metadata, builds) = collector::collect_all(flake_ref)?;
     let stats = BuildStats::from_builds(&builds);
 
     let builds_json = serde_json::to_string(&builds)?;
@@ -382,7 +328,6 @@ fn cmd_generate(
 
 async fn cmd_push_status(
     flake_ref: &str,
-    dry_run: bool,
     json_output: bool,
     cfg: &config::Config,
 ) -> Result<()> {
@@ -400,7 +345,7 @@ async fn cmd_push_status(
         );
     }
 
-    let (metadata, builds) = collector::collect_all(flake_ref, dry_run)?;
+    let (metadata, builds) = collector::collect_all(flake_ref)?;
     let revisions = github::extract_input_revisions(&metadata.inputs);
 
     let results = github::push_status(&cfg.status_push, &builds, &revisions).await;
@@ -461,7 +406,7 @@ async fn api_metadata(
 
 async fn api_refresh(State(state): State<AppState>) -> Json<ApiResponse<BuildStats>> {
     tracing::info!("Refreshing build data");
-    match collector::collect_all(&state.flake_ref, true) {
+    match collector::collect_all(&state.flake_ref) {
         Ok((meta, builds)) => {
             let stats = BuildStats::from_builds(&builds);
             *state.builds.lock().unwrap() = builds;
@@ -503,47 +448,6 @@ fn cmd_info(flake_ref: &str, json_output: bool) -> Result<()> {
             }
         }
         println!("╰───────────────────────────────────────────────╯");
-    }
-    Ok(())
-}
-
-fn cmd_build(flake_ref: &str, attr: &str, overrides: &[String], json_output: bool) -> Result<()> {
-    let parsed_overrides: Vec<(String, String)> = overrides
-        .iter()
-        .filter_map(|s| {
-            let parts: Vec<&str> = s.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                Some((parts[0].to_string(), parts[1].to_string()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let build = collector::build_derivation(flake_ref, attr, &parsed_overrides, 1);
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&build)?);
-    } else {
-        let icon = match build.status {
-            BuildStatus::Passed => "✓",
-            BuildStatus::Failed => "✕",
-            _ => "?",
-        };
-        println!(
-            "{} {} — {} ({})",
-            icon, build.derivation, build.status, build.duration
-        );
-        if !build.log.is_empty() {
-            println!("── log ──");
-            for line in &build.log {
-                println!("  {:>3} │ {}", line.n, line.text);
-            }
-        }
-    }
-
-    if build.status == BuildStatus::Failed {
-        std::process::exit(1);
     }
     Ok(())
 }
