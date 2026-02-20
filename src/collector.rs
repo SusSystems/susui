@@ -91,8 +91,19 @@ fn git_remote_info(dir: &str) -> (Option<String>, Option<String>) {
         Err(_) => return (None, None),
     };
 
+    // Strip authentication from URL: https://x-access-token:TOKEN@github.com/... → https://github.com/...
+    let cleaned = if let Some(at_pos) = url.find('@') {
+        if url.starts_with("https://") {
+            format!("https://{}", &url[at_pos + 1..])
+        } else {
+            url.clone()
+        }
+    } else {
+        url.clone()
+    };
+
     // Parse github:owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo.git
-    let stripped = url
+    let stripped = cleaned
         .trim_start_matches("https://github.com/")
         .trim_start_matches("git@github.com:")
         .trim_start_matches("github:")
@@ -542,6 +553,28 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
         }
     }
 
+    // Strategy 5: for check derivations of Rust projects, try `cargo test`
+    // to show the actual test output even when no nix log is cached.
+    if target.contains("#checks.") {
+        if let Some(log_lines) = try_cargo_test_fallback(target) {
+            if !log_lines.is_empty() {
+                let mut combined = log_lines;
+                let sep_n = combined.len() + 1;
+                combined.push(LogLine {
+                    n: sep_n,
+                    text: String::new(),
+                    level: "dim".to_string(),
+                });
+                let meta = derivation_info_lines(nix, target, drv_path);
+                for (i, mut line) in meta.into_iter().enumerate() {
+                    line.n = sep_n + 1 + i;
+                    combined.push(line);
+                }
+                return combined;
+            }
+        }
+    }
+
     // Fall back to derivation metadata only
     derivation_info_lines(nix, target, drv_path)
 }
@@ -685,6 +718,119 @@ fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
     }
 
     Some(result)
+}
+
+/// Fallback for Rust check derivations: run `cargo test` in the source directory
+/// to capture actual test output when no nix build log is cached.
+///
+/// This is a best-effort strategy — it only works when:
+///   - The flake ref points to a local directory
+///   - That directory contains a Cargo.toml
+///   - A Rust toolchain is available on PATH
+///
+/// The output is wrapped with phase markers so the dashboard's BuildLog component
+/// can render it with collapsible sections.
+fn try_cargo_test_fallback(target: &str) -> Option<Vec<LogLine>> {
+    // Extract flake ref from target: ".#checks.x86_64-linux.susui" → "."
+    let flake_ref = target.split('#').next().unwrap_or(".");
+    let src_dir = if flake_ref == "." || flake_ref.starts_with("./") || flake_ref.starts_with('/') {
+        flake_ref.to_string()
+    } else {
+        return None; // Remote flake, can't run cargo locally
+    };
+
+    let cargo_toml = std::path::Path::new(&src_dir).join("Cargo.toml");
+    if !cargo_toml.exists() {
+        return None;
+    }
+
+    // Check that cargo is available
+    if Command::new("which").arg("cargo").output().map(|o| !o.status.success()).unwrap_or(true) {
+        // Try common locations
+        let cargo_path = [
+            std::env::var("HOME").unwrap_or_default() + "/.cargo/bin/cargo",
+            "/usr/bin/cargo".to_string(),
+        ];
+        let found = cargo_path.iter().find(|p| std::path::Path::new(p).exists());
+        if found.is_none() {
+            return None;
+        }
+    }
+
+    // Resolve cargo binary
+    let cargo_bin = Command::new("which")
+        .arg("cargo")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let p = format!("{}/.cargo/bin/cargo", home);
+            if std::path::Path::new(&p).exists() { Some(p) } else { None }
+        })?;
+
+    // Run cargo test (with phase markers for BuildLog component)
+    let (_ok, stdout, stderr) = run_cmd_full(
+        &cargo_bin,
+        &["test", "--color=never"],
+    );
+
+    let combined = format!("{}{}", stderr, stdout);
+    if combined.trim().is_empty() {
+        return None;
+    }
+
+    // Build phase-annotated log lines
+    let mut lines = Vec::new();
+    let mut n = 1;
+
+    // Header
+    lines.push(LogLine { n, text: "─── cargo test (live fallback — no cached nix log) ───".to_string(), level: "dim".to_string() });
+    n += 1;
+
+    // Separate compilation output from test output
+    let mut in_test_section = false;
+    lines.push(LogLine { n, text: "Running phase: buildPhase".to_string(), level: "nix".to_string() });
+    n += 1;
+
+    for raw_line in combined.lines() {
+        if is_nix_noise(raw_line) {
+            continue;
+        }
+
+        // Detect the transition to test execution
+        let trimmed = raw_line.trim();
+        if !in_test_section && (trimmed.starts_with("Running ") || trimmed.starts_with("running ")) && trimmed.contains("test") {
+            in_test_section = true;
+            lines.push(LogLine { n, text: "Running phase: checkPhase".to_string(), level: "nix".to_string() });
+            n += 1;
+        }
+
+        lines.push(LogLine {
+            n,
+            text: raw_line.to_string(),
+            level: classify_log_line(raw_line),
+        });
+        n += 1;
+    }
+
+    // If we never entered test section, mark the whole thing as checkPhase
+    if !in_test_section && !lines.is_empty() {
+        // Insert a checkPhase marker after the header
+        lines.insert(2, LogLine { n: 0, text: "Running phase: checkPhase".to_string(), level: "nix".to_string() });
+    }
+
+    // Renumber
+    for (i, line) in lines.iter_mut().enumerate() {
+        line.n = i + 1;
+    }
+
+    if lines.len() <= 2 {
+        return None;
+    }
+
+    Some(lines)
 }
 
 /// Extract readable derivation info from `nix derivation show`.

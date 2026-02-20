@@ -446,7 +446,7 @@ function OverridePill({ inputName, type, owner, repo, ref: gitRef, pr, flakeRef 
 }
 
 // ─── NIX BUILD ROW ──────────────────────────────────────────
-function NixBuildRow({ build, isExpanded, onToggle, grouped }) {
+function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog }) {
   const cfg = statusConfig[build.status] || statusConfig.pending;
   const hasOv = build.overrideInputs && build.overrideInputs.length > 0;
   const commitUrl = build.owner && build.repo && build.commit
@@ -565,7 +565,20 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped }) {
             <div style=${{ background: T.color.surface0, borderRadius: T.radius.sm, border: "1px solid " + T.color.borderSubtle, overflow: "hidden", width: "100%" }}>
               <div style=${{ padding: "8px 12px", borderBottom: "1px solid " + T.color.borderSubtle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textTertiary }}>build log · ${build.derivation}</span>
-                <${StatusBadge} status=${build.status} size="sm" />
+                <div style=${{ display: "flex", alignItems: "center", gap: 10 }}>
+                  ${onFullLog && build.log.length > 0 && html`
+                    <a onClick=${(e) => { e.stopPropagation(); onFullLog(build.id); }}
+                      style=${{ fontFamily: T.font.mono, fontSize: 10, color: T.color.saku300,
+                        cursor: "pointer", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4,
+                        padding: "2px 8px", borderRadius: T.radius.xs, border: "1px solid " + T.color.saku400 + "25",
+                        background: T.color.saku400 + "08", transition: "all " + T.transition.fast, letterSpacing: "0.02em" }}
+                      onMouseEnter=${e => { e.currentTarget.style.background = T.color.saku400 + "18"; e.currentTarget.style.borderColor = T.color.saku400 + "40"; }}
+                      onMouseLeave=${e => { e.currentTarget.style.background = T.color.saku400 + "08"; e.currentTarget.style.borderColor = T.color.saku400 + "25"; }}>
+                      Full log →
+                    </a>
+                  `}
+                  <${StatusBadge} status=${build.status} size="sm" />
+                </div>
               </div>
               <${BuildLog} log=${build.log} derivation=${build.derivation} />
             </div>
@@ -577,7 +590,7 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped }) {
 }
 
 // ─── COMMIT GROUP ──────────────────────────────────────────
-function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle }) {
+function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle, onFullLog }) {
   const shortSha = commit ? commit.slice(0, 7) : "—";
   const commitUrl = owner && repo && commit
     ? "https://github.com/" + owner + "/" + repo + "/commit/" + commit : null;
@@ -615,8 +628,76 @@ function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBu
       </div>
       ${builds.map(build => html`
         <${NixBuildRow} key=${build.id} build=${build} isExpanded=${expandedBuild === build.id}
-          onToggle=${() => onToggle(build.id)} grouped=${true} />
+          onToggle=${() => onToggle(build.id)} grouped=${true} onFullLog=${onFullLog} />
       `)}
+    </div>
+  `;
+}
+
+// ─── FULL LOG PAGE ──────────────────────────────────────────
+function FullLogPage({ build, onBack }) {
+  const copyLog = useCallback(() => {
+    const text = build.log.map(l => l.text).join("\n");
+    navigator.clipboard.writeText(text).catch(() => {});
+  }, [build]);
+
+  return html`
+    <div class="root">
+      <style>${cssText}</style>
+      <div style=${{ maxWidth: 1100, margin: "0 auto", padding: "32px 24px" }}>
+        <div style=${{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+          <button onClick=${onBack}
+            style=${{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 14px",
+              background: T.color.surface2, border: "1px solid " + T.color.border,
+              borderRadius: T.radius.sm, fontSize: T.fontSize.sm, fontFamily: T.font.body,
+              color: T.color.textSecondary, cursor: "pointer", transition: "all " + T.transition.fast }}
+            onMouseEnter=${e => e.currentTarget.style.borderColor = T.color.saku400 + "60"}
+            onMouseLeave=${e => e.currentTarget.style.borderColor = T.color.border}>
+            ← Back
+          </button>
+          <div style=${{ flex: 1 }}>
+            <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style=${{ width: 3, height: 16, borderRadius: 2, background: T.color.saku400 }} />
+              <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.base, fontWeight: 600, color: T.color.textPrimary }}>${build.derivation}</span>
+              <${StatusBadge} status=${build.status} size="sm" />
+            </div>
+            <div style=${{ fontSize: T.fontSize.xs, color: T.color.textTertiary, marginTop: 4, marginLeft: 11 }}>
+              Full build log · ${build.log.length} lines
+            </div>
+          </div>
+          <button onClick=${copyLog}
+            style=${{ display: "inline-flex", alignItems: "center", gap: 6, padding: "6px 14px",
+              background: T.color.surface2, border: "1px solid " + T.color.border,
+              borderRadius: T.radius.sm, fontSize: T.fontSize.sm, fontFamily: T.font.body,
+              color: T.color.textSecondary, cursor: "pointer", transition: "all " + T.transition.fast }}
+            onMouseEnter=${e => e.currentTarget.style.borderColor = T.color.saku400 + "60"}
+            onMouseLeave=${e => e.currentTarget.style.borderColor = T.color.border}>
+            Copy
+          </button>
+        </div>
+        ${build.drvPath && html`
+          <div style=${{ display: "flex", gap: 16, marginBottom: 16, fontSize: T.fontSize.xs, fontFamily: T.font.mono, color: T.color.textTertiary, flexWrap: "wrap" }}>
+            ${build.drvPath && html`<span>drv: ${build.drvPath}</span>`}
+            ${build.storePath && html`<span>out: <span style=${{ color: build.inStore ? T.color.pass400 : T.color.textTertiary }}>${build.storePath}</span></span>`}
+          </div>
+        `}
+        <div style=${{ background: T.color.surface0, border: "1px solid " + T.color.border, borderRadius: T.radius.lg, overflow: "hidden" }}>
+          <div style=${{ padding: "10px 16px", borderBottom: "1px solid " + T.color.borderSubtle, display: "flex", alignItems: "center", justifyContent: "space-between", background: T.color.surface1 }}>
+            <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textTertiary }}>build log · ${build.derivation}</span>
+            <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style=${{ fontFamily: T.font.mono, fontSize: 10, color: T.color.textTertiary }}>${build.log.length} lines</span>
+              <${StatusBadge} status=${build.status} size="sm" />
+            </div>
+          </div>
+          <div style=${{ padding: "8px 0" }}>
+            ${build.log.map((line, i) => html`<${LogLine} key=${i} number=${line.n} content=${line.text} level=${line.level} />`)}
+          </div>
+        </div>
+        <div style=${{ marginTop: 24, paddingTop: 16, borderTop: "1px solid " + T.color.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style=${{ fontSize: T.fontSize.xs, color: T.color.textTertiary }}>sus ui · full build log</div>
+          <div style=${{ fontSize: T.fontSize.xs, color: T.color.textTertiary, fontFamily: T.font.mono }}>柵 /saku/</div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -629,6 +710,39 @@ function App() {
   const [search, setSearch] = useState("");
   const [builds, setBuilds] = useState(BUILDS_DATA);
   const [meta, setMeta] = useState(META_DATA);
+  const [fullLogBuildId, setFullLogBuildId] = useState(null);
+
+  // Hash-based routing for full log view
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash;
+      const match = hash.match(/^#log\/(\d+)$/);
+      if (match) {
+        setFullLogBuildId(parseInt(match[1], 10));
+      } else {
+        setFullLogBuildId(null);
+      }
+    };
+    handleHash();
+    window.addEventListener("hashchange", handleHash);
+    return () => window.removeEventListener("hashchange", handleHash);
+  }, []);
+
+  const openFullLog = useCallback((buildId) => {
+    window.location.hash = "log/" + buildId;
+  }, []);
+
+  const closeFullLog = useCallback(() => {
+    window.location.hash = "";
+  }, []);
+
+  // Full log page
+  if (fullLogBuildId !== null) {
+    const build = builds.find(b => b.id === fullLogBuildId);
+    if (build) {
+      return html`<${FullLogPage} build=${build} onBack=${closeFullLog} />`;
+    }
+  }
 
   // Auto-refresh every 30s (disabled in static mode)
   useEffect(() => {
@@ -788,10 +902,10 @@ function App() {
           `}
           ${grouped.length === 1
             ? grouped[0].builds.length === 1
-              ? html`<${NixBuildRow} key=${grouped[0].builds[0].id} build=${grouped[0].builds[0]} isExpanded=${expandedBuild === grouped[0].builds[0].id} onToggle=${() => setExpandedBuild(expandedBuild === grouped[0].builds[0].id ? null : grouped[0].builds[0].id)} />`
-              : html`<${CommitGroup} key=${grouped[0].commit} ...${grouped[0]} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} />`
+              ? html`<${NixBuildRow} key=${grouped[0].builds[0].id} build=${grouped[0].builds[0]} isExpanded=${expandedBuild === grouped[0].builds[0].id} onToggle=${() => setExpandedBuild(expandedBuild === grouped[0].builds[0].id ? null : grouped[0].builds[0].id)} onFullLog=${openFullLog} />`
+              : html`<${CommitGroup} key=${grouped[0].commit} ...${grouped[0]} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} />`
             : grouped.map(g => html`
-              <${CommitGroup} key=${g.commit} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} />
+              <${CommitGroup} key=${g.commit} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} />
             `)
           }
         </div>
