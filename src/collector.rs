@@ -252,7 +252,7 @@ pub fn build_derivation(
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
 
-    let mut args = vec!["build", &target, "--no-link"];
+    let mut args = vec!["build", &target, "--no-link", "-L"];
     let override_strs: Vec<String> = overrides
         .iter()
         .map(|(name, uri)| format!("{}={}", name, uri))
@@ -331,6 +331,10 @@ pub fn build_derivation(
 /// present in the store, so it works reliably in minimal / container
 /// environments where `nix build --dry-run` would fail with missing .drv
 /// errors.
+///
+/// After resolving the .drv path, enriches the log with:
+///   1. `nix log <drv>` — cached build output if the derivation was previously built
+///   2. `nix derivation show` — structured build recipe (builder, phases, inputs, outputs)
 pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
@@ -343,8 +347,6 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
 
     // The derivation store path is the meaningful output
     let drv_path = stdout.trim().to_string();
-    let combined = format!("{}{}", stdout, stderr);
-    let log_lines = make_log_lines(&combined);
 
     let dir = if flake_ref.starts_with('.') || flake_ref.starts_with('/') {
         flake_ref.to_string()
@@ -359,6 +361,15 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     // If we got a .drv path back, the evaluation succeeded even if
     // the exit code was non-zero due to stderr warnings.
     let eval_ok = success || drv_path.starts_with("/nix/store/");
+
+    // Enrich logs: try cached build log first, then derivation metadata
+    let log_lines = if eval_ok {
+        enrich_eval_logs(&nix, &target, &drv_path)
+    } else {
+        // Evaluation itself failed — show the filtered error output
+        let combined = format!("{}{}", stdout, stderr);
+        make_log_lines(&combined)
+    };
 
     Build {
         id,
@@ -379,6 +390,214 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
         override_inputs: vec![],
         log: log_lines,
     }
+}
+
+/// Enrich eval-mode logs with cached build output or derivation metadata.
+///
+/// Priority:
+///   1. `nix log <drv>` — real build output from a previous build
+///   2. `nix derivation show` — structured recipe (builder, phases, deps, outputs)
+fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine> {
+    // Try cached build log first
+    if let Some(log_lines) = try_cached_log(nix, drv_path) {
+        if !log_lines.is_empty() {
+            return log_lines;
+        }
+    }
+
+    // Fall back to derivation metadata
+    derivation_info_lines(nix, target, drv_path)
+}
+
+/// Try to fetch a cached build log via `nix log`.
+fn try_cached_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
+    let (ok, stdout, _stderr) = run_cmd_full(nix, &["log", drv_path]);
+    if !ok || stdout.trim().is_empty() {
+        return None;
+    }
+
+    let lines = make_log_lines(&stdout);
+    if lines.is_empty() {
+        return None;
+    }
+
+    // Prepend a header so it's clear this is a cached log
+    let mut result = vec![LogLine {
+        n: 1,
+        text: format!("─── cached build log ({}) ───", drv_path.split('/').last().unwrap_or(drv_path)),
+        level: "dim".to_string(),
+    }];
+
+    for (i, mut line) in lines.into_iter().enumerate() {
+        line.n = i + 2;
+        result.push(line);
+    }
+
+    Some(result)
+}
+
+/// Extract readable derivation info from `nix derivation show`.
+fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine> {
+    let (ok, stdout, _stderr) = run_cmd_full(nix, &["derivation", "show", target]);
+    if !ok {
+        // Last resort: just show the drv path
+        return vec![LogLine {
+            n: 1,
+            text: drv_path.to_string(),
+            level: "success".to_string(),
+        }];
+    }
+
+    let mut lines: Vec<(String, String)> = Vec::new(); // (text, level)
+
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        // Find the derivation object — it's under "derivations" (nix 2.33+) or at the top level
+        let drvs = parsed
+            .get("derivations")
+            .and_then(|d| d.as_object())
+            .or_else(|| parsed.as_object());
+
+        if let Some(drvs_map) = drvs {
+            for (drv_key, drv) in drvs_map {
+                let obj = match drv.as_object() {
+                    Some(o) => o,
+                    None => continue,
+                };
+                let env = obj.get("env").and_then(|e| e.as_object());
+
+                // Header
+                let name = env
+                    .and_then(|e| e.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(drv_key);
+                lines.push((
+                    format!("─── derivation: {} ───", name),
+                    "dim".to_string(),
+                ));
+
+                // System & builder
+                if let Some(sys) = obj.get("system").and_then(|v| v.as_str()) {
+                    lines.push((format!("system:   {}", sys), "info".to_string()));
+                }
+                if let Some(builder) = obj.get("builder").and_then(|v| v.as_str()) {
+                    let short = builder.split('/').last().unwrap_or(builder);
+                    lines.push((format!("builder:  {}", short), "info".to_string()));
+                }
+
+                if let Some(env_map) = env {
+                    // Key build metadata
+                    for key in &["pname", "version", "src", "cargoDeps", "cargoBuildType"] {
+                        if let Some(val) = env_map.get(*key).and_then(|v| v.as_str()) {
+                            let display = if val.starts_with("/nix/store/") {
+                                val.split('/').last().unwrap_or(val)
+                            } else {
+                                val
+                            };
+                            lines.push((format!("{:<14}{}", format!("{}:", key), display), "info".to_string()));
+                        }
+                    }
+
+                    // Build phases (the actual commands)
+                    for phase in &["configurePhase", "buildPhase", "checkPhase", "installPhase"] {
+                        if let Some(val) = env_map.get(*phase).and_then(|v| v.as_str()) {
+                            let val = val.trim();
+                            if !val.is_empty() && val != ":" {
+                                lines.push((String::new(), "dim".to_string()));
+                                lines.push((
+                                    format!("─ {} ─", phase),
+                                    "nix".to_string(),
+                                ));
+                                for cmd_line in val.lines() {
+                                    let trimmed = cmd_line.trim();
+                                    if !trimmed.is_empty() {
+                                        lines.push((
+                                            format!("  {}", trimmed),
+                                            if trimmed.starts_with("runHook") {
+                                                "dim".to_string()
+                                            } else {
+                                                "info".to_string()
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Build inputs (shortened)
+                    for key in &["nativeBuildInputs", "buildInputs"] {
+                        if let Some(val) = env_map.get(*key).and_then(|v| v.as_str()) {
+                            let deps: Vec<&str> = val
+                                .split_whitespace()
+                                .filter_map(|p| p.split('/').last())
+                                .collect();
+                            if !deps.is_empty() {
+                                lines.push((String::new(), "dim".to_string()));
+                                lines.push((
+                                    format!("─ {} ({}) ─", key, deps.len()),
+                                    "nix".to_string(),
+                                ));
+                                for dep in &deps {
+                                    lines.push((format!("  {}", dep), "dim".to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Outputs
+                if let Some(outputs) = obj.get("outputs").and_then(|o| o.as_object()) {
+                    lines.push((String::new(), "dim".to_string()));
+                    lines.push(("─ outputs ─".to_string(), "nix".to_string()));
+                    for (oname, odata) in outputs {
+                        let path = odata
+                            .as_object()
+                            .and_then(|o| o.get("path"))
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("?");
+                        lines.push((
+                            format!("  {}: /nix/store/{}", oname, path),
+                            "success".to_string(),
+                        ));
+                    }
+                }
+
+                // Input counts
+                if let Some(inputs) = obj.get("inputs").and_then(|i| i.as_object()) {
+                    let drv_count = inputs
+                        .get("drvs")
+                        .and_then(|d| d.as_object())
+                        .map(|d| d.len())
+                        .unwrap_or(0);
+                    let src_count = inputs
+                        .get("srcs")
+                        .and_then(|s| s.as_array())
+                        .map(|a| a.len())
+                        .unwrap_or(0);
+                    lines.push((String::new(), "dim".to_string()));
+                    lines.push((
+                        format!("inputs: {} derivations, {} sources", drv_count, src_count),
+                        "dim".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    // If parsing failed or produced nothing, at least show the drv path
+    if lines.is_empty() {
+        lines.push((drv_path.to_string(), "success".to_string()));
+    }
+
+    lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, (text, level))| LogLine {
+            n: i + 1,
+            text,
+            level,
+        })
+        .collect()
 }
 
 /// Scan a flake and return builds for all discovered outputs
