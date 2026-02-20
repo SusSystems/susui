@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# _env — resolve credentials from environment variables
+# Sourced by bootstrap.sh
+#
+# Some container runtimes incorrectly set env var names with a literal
+# "export " prefix (e.g. key = "export GITHUB_ORG" instead of "GITHUB_ORG").
+# We detect this and fix it by reading /proc/self/environ directly.
+
+_resolve_env() {
+    local var="$1"
+    # If the variable is already set normally, nothing to do.
+    if [ -n "${!var:-}" ]; then
+        return 0
+    fi
+
+    # Try to extract from /proc/self/environ where the key may be
+    # "export <VAR>" (with a literal space) instead of "<VAR>".
+    if [ -f /proc/self/environ ]; then
+        local val
+        val="$(python3 -c "
+import os, sys
+key = 'export ' + sys.argv[1]
+val = os.environ.get(key)
+if val is not None:
+    print(val, end='')
+    sys.exit(0)
+sys.exit(1)
+" "$var" 2>/dev/null)" && {
+            export "$var=$val"
+            return 0
+        }
+    fi
+
+    echo "ERROR: $var is not set" >&2
+    return 1
+}
+
+_resolve_env GITHUB_APP_ID
+_resolve_env GITHUB_INSTALLATION_ID
+_resolve_env GITHUB_PRIVATE_KEY
+_resolve_env GITHUB_ORG
+
+unset -f _resolve_env
