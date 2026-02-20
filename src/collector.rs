@@ -1014,7 +1014,68 @@ pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
         builds.push(build);
     }
 
+    sort_by_dependency_order(&mut builds);
+
     Ok(builds)
+}
+
+/// Sort builds by dependency order to match continuous build log output.
+///
+/// The ordering principle: package builds appear first, followed by their
+/// associated checks (which share the same `drv_path`), then independent
+/// checks, and finally dev shells.  Within each group, builds sharing the
+/// same derivation path are kept adjacent so the dashboard reads like a
+/// continuous build log where tests run right after the build they verify.
+fn sort_by_dependency_order(builds: &mut Vec<Build>) {
+    use std::collections::HashSet;
+
+    // Collect drvPaths that belong to package outputs (owned to avoid borrow conflict)
+    let package_drvs: HashSet<String> = builds
+        .iter()
+        .filter(|b| b.derivation.starts_with("packages."))
+        .filter_map(|b| b.drv_path.clone())
+        .collect();
+
+    // Sort key: (category, drv_path, is_not_package, derivation)
+    //
+    // category:
+    //   0 = packages and checks whose drvPath matches a package (same build)
+    //   1 = independent checks (own drvPath, no matching package)
+    //   2 = devShells
+    //   3 = everything else
+    //
+    // Grouping by drv_path keeps same-derivation builds adjacent.
+    // is_not_package ensures packages sort before their matching checks.
+    builds.sort_by(|a, b| {
+        let key = |build: &Build| -> (u8, String, bool, String) {
+            let drv = build.drv_path.as_deref().unwrap_or("");
+            let is_pkg = build.derivation.starts_with("packages.");
+            let is_check = build.derivation.starts_with("checks.");
+            let is_shell = build.derivation.starts_with("devShells.");
+
+            let category = if is_pkg {
+                0
+            } else if is_check {
+                if !drv.is_empty() && package_drvs.contains(drv) {
+                    0 // group with its package
+                } else {
+                    1
+                }
+            } else if is_shell {
+                2
+            } else {
+                3
+            };
+
+            (category, drv.to_string(), !is_pkg, build.derivation.clone())
+        };
+        key(a).cmp(&key(b))
+    });
+
+    // Re-assign sequential IDs to match the new order
+    for (i, build) in builds.iter_mut().enumerate() {
+        build.id = (i + 1) as u64;
+    }
 }
 
 /// Collect all data for a flake: metadata + builds (evaluation only, no builds triggered)
@@ -1253,5 +1314,80 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
         assert_eq!(stats.overridden, 1);
         assert_eq!(stats.in_store, 1);
         assert!((stats.success_rate - 50.0).abs() < 0.01);
+    }
+
+    fn make_build(id: u64, derivation: &str, drv_path: Option<&str>) -> Build {
+        Build {
+            id,
+            derivation: derivation.into(),
+            status: BuildStatus::Passed,
+            duration: "1s".into(),
+            time: "now".into(),
+            branch: None,
+            commit: "abc".into(),
+            owner: None,
+            repo: None,
+            flake_ref: ".".into(),
+            pr: None,
+            override_inputs: vec![],
+            log: vec![],
+            drv_path: drv_path.map(|s| s.to_string()),
+            store_path: None,
+            in_store: false,
+        }
+    }
+
+    #[test]
+    fn test_sort_by_dependency_order() {
+        // Alphabetical input (as nix flake show would produce)
+        let mut builds = vec![
+            make_build(1, "checks.x86_64-linux.clippy", Some("/nix/store/aaa-clippy.drv")),
+            make_build(2, "checks.x86_64-linux.susui", Some("/nix/store/bbb-susui.drv")),
+            make_build(3, "devShells.x86_64-linux.default", Some("/nix/store/ccc-shell.drv")),
+            make_build(4, "packages.x86_64-linux.default", Some("/nix/store/bbb-susui.drv")),
+            make_build(5, "packages.x86_64-linux.susui", Some("/nix/store/bbb-susui.drv")),
+        ];
+
+        sort_by_dependency_order(&mut builds);
+
+        let order: Vec<&str> = builds.iter().map(|b| b.derivation.as_str()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "packages.x86_64-linux.default",   // package build first
+                "packages.x86_64-linux.susui",      // same drv, also a package
+                "checks.x86_64-linux.susui",        // same drv as packages, tests after build
+                "checks.x86_64-linux.clippy",       // independent check
+                "devShells.x86_64-linux.default",   // dev shell last
+            ]
+        );
+
+        // IDs should be re-assigned sequentially
+        let ids: Vec<u64> = builds.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_sort_preserves_order_for_unrelated_checks() {
+        // Multiple independent checks should remain in stable (alphabetical) order
+        let mut builds = vec![
+            make_build(1, "checks.x86_64-linux.audit", Some("/nix/store/aaa.drv")),
+            make_build(2, "checks.x86_64-linux.clippy", Some("/nix/store/bbb.drv")),
+            make_build(3, "checks.x86_64-linux.fmt", Some("/nix/store/ccc.drv")),
+            make_build(4, "packages.x86_64-linux.default", Some("/nix/store/ddd.drv")),
+        ];
+
+        sort_by_dependency_order(&mut builds);
+
+        let order: Vec<&str> = builds.iter().map(|b| b.derivation.as_str()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "packages.x86_64-linux.default",
+                "checks.x86_64-linux.audit",
+                "checks.x86_64-linux.clippy",
+                "checks.x86_64-linux.fmt",
+            ]
+        );
     }
 }
