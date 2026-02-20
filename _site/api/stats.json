@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "data": {
+    "all": 3,
+    "passed": 3,
+    "failed": 0,
+    "running": 0,
+    "pending": 0,
+    "skipped": 0,
+    "unknown": 0,
+    "overridden": 0,
+    "inStore": 3,
+    "successRate": 100.0
+  }
+}

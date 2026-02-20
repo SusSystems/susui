@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "data": {
+    "description": "sus ui \u2014 nix build dashboard",
+    "url": "http://local_proxy@127.0.0.1:26417/git/SusSystems/susui",
+    "resolvedUrl": "path:/home/user/susui",
+    "revision": "56af2a28f69984cee67c6dea7492fa9b71da2bd4",
+    "inputs": [
+      {
+        "name": "nixpkgs",
+        "type": "github",
+        "url": "github:NixOS/nixpkgs/nixos-unstable",
+        "lockedRev": "0182a361"
+      },
+      {
+        "name": "flake-parts",
+        "type": "github",
+        "url": "github:hercules-ci/flake-parts",
+        "lockedRev": "579286"
+      },
+      {
+        "name": "rust-overlay",
+        "type": "github",
+        "url": "github:oxalica/rust-overlay",
+        "lockedRev": "a1d4cc1f"
+      }
+    ]
+  }
+}

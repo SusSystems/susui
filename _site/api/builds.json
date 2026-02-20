@@ -1,0 +1,1653 @@
+{
+  "ok": true,
+  "data": [
+    {
+      "id": 1,
+      "derivation": "packages.x86_64-linux.susui",
+      "status": "passed",
+      "duration": "1m 31s",
+      "time": "2026-02-20T05:52:12Z",
+      "branch": "claude/build-static-dashboard-xMZrI",
+      "commit": "56af2a28f69984cee67c6dea7492fa9b71da2bd4",
+      "owner": "git",
+      "repo": "SusSystems",
+      "flakeRef": ".",
+      "overrideInputs": [],
+      "log": [
+        {
+          "n": 1,
+          "text": "\u2500\u2500\u2500 cargo build --release (packages.x86_64-linux.susui) \u2500\u2500\u2500",
+          "level": "dim"
+        },
+        {
+          "n": 2,
+          "text": "Updating crates.io index",
+          "level": "info"
+        },
+        {
+          "n": 3,
+          "text": " Downloading crates ...",
+          "level": "info"
+        },
+        {
+          "n": 4,
+          "text": "  Downloaded zerofrom v0.1.6",
+          "level": "info"
+        },
+        {
+          "n": 5,
+          "text": "  Downloaded zerofrom-derive v0.1.6",
+          "level": "info"
+        },
+        {
+          "n": 6,
+          "text": "  Downloaded zerovec-derive v0.11.2",
+          "level": "info"
+        },
+        {
+          "n": 7,
+          "text": "  Downloaded zmij v1.0.21",
+          "level": "info"
+        },
+        {
+          "n": 8,
+          "text": "  Downloaded unsafe-libyaml v0.2.11",
+          "level": "info"
+        },
+        {
+          "n": 9,
+          "text": "  Downloaded zerotrie v0.2.3",
+          "level": "info"
+        },
+        {
+          "n": 10,
+          "text": "  Downloaded url v2.5.8",
+          "level": "info"
+        },
+        {
+          "n": 11,
+          "text": "  Downloaded zerovec v0.11.5",
+          "level": "info"
+        },
+        {
+          "n": 12,
+          "text": "  Downloaded tower v0.5.3",
+          "level": "info"
+        },
+        {
+          "n": 13,
+          "text": "  Downloaded tower-http v0.6.8",
+          "level": "info"
+        },
+        {
+          "n": 14,
+          "text": "  Downloaded iri-string v0.7.10",
+          "level": "info"
+        },
+        {
+          "n": 15,
+          "text": "  Downloaded syn v2.0.116",
+          "level": "info"
+        },
+        {
+          "n": 16,
+          "text": "  Downloaded serde_json v1.0.149",
+          "level": "info"
+        },
+        {
+          "n": 17,
+          "text": "  Downloaded futures-util v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 18,
+          "text": "  Downloaded zerocopy v0.8.39",
+          "level": "info"
+        },
+        {
+          "n": 19,
+          "text": "  Downloaded webpki-roots v1.0.6",
+          "level": "info"
+        },
+        {
+          "n": 20,
+          "text": "  Downloaded tracing-subscriber v0.3.22",
+          "level": "info"
+        },
+        {
+          "n": 21,
+          "text": "  Downloaded aho-corasick v1.1.4",
+          "level": "info"
+        },
+        {
+          "n": 22,
+          "text": "  Downloaded quinn-proto v0.11.13",
+          "level": "info"
+        },
+        {
+          "n": 23,
+          "text": "  Downloaded chrono v0.4.43",
+          "level": "info"
+        },
+        {
+          "n": 24,
+          "text": "  Downloaded clap_builder v4.5.60",
+          "level": "info"
+        },
+        {
+          "n": 25,
+          "text": "  Downloaded axum v0.8.8",
+          "level": "info"
+        },
+        {
+          "n": 26,
+          "text": "  Downloaded icu_properties_data v2.1.2",
+          "level": "info"
+        },
+        {
+          "n": 27,
+          "text": "  Downloaded hyper v1.8.1",
+          "level": "info"
+        },
+        {
+          "n": 28,
+          "text": "  Downloaded regex-syntax v0.8.9",
+          "level": "info"
+        },
+        {
+          "n": 29,
+          "text": "  Downloaded rustls v0.23.36",
+          "level": "info"
+        },
+        {
+          "n": 30,
+          "text": "  Downloaded tracing v0.1.44",
+          "level": "info"
+        },
+        {
+          "n": 31,
+          "text": "  Downloaded hashbrown v0.16.1",
+          "level": "info"
+        },
+        {
+          "n": 32,
+          "text": "  Downloaded reqwest v0.12.28",
+          "level": "info"
+        },
+        {
+          "n": 33,
+          "text": "  Downloaded idna v1.1.0",
+          "level": "info"
+        },
+        {
+          "n": 34,
+          "text": "  Downloaded mio v1.1.1",
+          "level": "info"
+        },
+        {
+          "n": 35,
+          "text": "  Downloaded http v1.4.0",
+          "level": "info"
+        },
+        {
+          "n": 36,
+          "text": "  Downloaded rand v0.9.2",
+          "level": "info"
+        },
+        {
+          "n": 37,
+          "text": "  Downloaded memchr v2.8.0",
+          "level": "info"
+        },
+        {
+          "n": 38,
+          "text": "  Downloaded indexmap v2.13.0",
+          "level": "info"
+        },
+        {
+          "n": 39,
+          "text": "  Downloaded hyper-util v0.1.20",
+          "level": "info"
+        },
+        {
+          "n": 40,
+          "text": "  Downloaded cc v1.2.56",
+          "level": "info"
+        },
+        {
+          "n": 41,
+          "text": "  Downloaded serde v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 42,
+          "text": "  Downloaded regex-automata v0.4.14",
+          "level": "info"
+        },
+        {
+          "n": 43,
+          "text": "  Downloaded rustls-webpki v0.103.9",
+          "level": "info"
+        },
+        {
+          "n": 44,
+          "text": "  Downloaded quinn v0.11.9",
+          "level": "info"
+        },
+        {
+          "n": 45,
+          "text": "  Downloaded num-traits v0.2.19",
+          "level": "info"
+        },
+        {
+          "n": 46,
+          "text": "  Downloaded icu_normalizer_data v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 47,
+          "text": "  Downloaded icu_collections v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 48,
+          "text": "  Downloaded clap v4.5.60",
+          "level": "info"
+        },
+        {
+          "n": 49,
+          "text": "  Downloaded bytes v1.11.1",
+          "level": "info"
+        },
+        {
+          "n": 50,
+          "text": "  Downloaded base64 v0.22.1",
+          "level": "info"
+        },
+        {
+          "n": 51,
+          "text": "  Downloaded serde_yaml v0.9.34+deprecated",
+          "level": "info"
+        },
+        {
+          "n": 52,
+          "text": "  Downloaded log v0.4.29",
+          "level": "info"
+        },
+        {
+          "n": 53,
+          "text": "  Downloaded tokio v1.49.0",
+          "level": "info"
+        },
+        {
+          "n": 54,
+          "text": "  Downloaded icu_provider v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 55,
+          "text": "  Downloaded libc v0.2.182",
+          "level": "info"
+        },
+        {
+          "n": 56,
+          "text": "  Downloaded icu_properties v2.1.2",
+          "level": "info"
+        },
+        {
+          "n": 57,
+          "text": "  Downloaded icu_normalizer v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 58,
+          "text": "  Downloaded icu_locale_core v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 59,
+          "text": "  Downloaded iana-time-zone v0.1.65",
+          "level": "info"
+        },
+        {
+          "n": 60,
+          "text": "  Downloaded hyper-rustls v0.27.7",
+          "level": "info"
+        },
+        {
+          "n": 61,
+          "text": "  Downloaded getrandom v0.3.4",
+          "level": "info"
+        },
+        {
+          "n": 62,
+          "text": "  Downloaded autocfg v1.5.0",
+          "level": "info"
+        },
+        {
+          "n": 63,
+          "text": "  Downloaded anyhow v1.0.101",
+          "level": "info"
+        },
+        {
+          "n": 64,
+          "text": "  Downloaded socket2 v0.6.2",
+          "level": "info"
+        },
+        {
+          "n": 65,
+          "text": "  Downloaded ryu v1.0.23",
+          "level": "info"
+        },
+        {
+          "n": 66,
+          "text": "  Downloaded quinn-udp v0.5.14",
+          "level": "info"
+        },
+        {
+          "n": 67,
+          "text": "  Downloaded proc-macro2 v1.0.106",
+          "level": "info"
+        },
+        {
+          "n": 68,
+          "text": "  Downloaded parking_lot v0.12.5",
+          "level": "info"
+        },
+        {
+          "n": 69,
+          "text": "  Downloaded litemap v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 70,
+          "text": "  Downloaded httparse v1.10.1",
+          "level": "info"
+        },
+        {
+          "n": 71,
+          "text": "  Downloaded getrandom v0.2.17",
+          "level": "info"
+        },
+        {
+          "n": 72,
+          "text": "  Downloaded futures-channel v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 73,
+          "text": "  Downloaded clap_derive v4.5.55",
+          "level": "info"
+        },
+        {
+          "n": 74,
+          "text": "  Downloaded bitflags v2.11.0",
+          "level": "info"
+        },
+        {
+          "n": 75,
+          "text": "  Downloaded axum-core v0.5.6",
+          "level": "info"
+        },
+        {
+          "n": 76,
+          "text": "  Downloaded anstream v0.6.21",
+          "level": "info"
+        },
+        {
+          "n": 77,
+          "text": "  Downloaded unicode-ident v1.0.24",
+          "level": "info"
+        },
+        {
+          "n": 78,
+          "text": "  Downloaded tracing-core v0.1.36",
+          "level": "info"
+        },
+        {
+          "n": 79,
+          "text": "  Downloaded tracing-attributes v0.1.31",
+          "level": "info"
+        },
+        {
+          "n": 80,
+          "text": "  Downloaded tinyvec v1.10.0",
+          "level": "info"
+        },
+        {
+          "n": 81,
+          "text": "  Downloaded smallvec v1.15.1",
+          "level": "info"
+        },
+        {
+          "n": 82,
+          "text": "  Downloaded sharded-slab v0.1.7",
+          "level": "info"
+        },
+        {
+          "n": 83,
+          "text": "  Downloaded serde_path_to_error v0.1.20",
+          "level": "error"
+        },
+        {
+          "n": 84,
+          "text": "  Downloaded rustls-pki-types v1.14.0",
+          "level": "info"
+        },
+        {
+          "n": 85,
+          "text": "  Downloaded rand_chacha v0.9.0",
+          "level": "info"
+        },
+        {
+          "n": 86,
+          "text": "  Downloaded parking_lot_core v0.9.12",
+          "level": "info"
+        },
+        {
+          "n": 87,
+          "text": "  Downloaded once_cell v1.21.3",
+          "level": "info"
+        },
+        {
+          "n": 88,
+          "text": "  Downloaded matchit v0.8.4",
+          "level": "info"
+        },
+        {
+          "n": 89,
+          "text": "  Downloaded lock_api v0.4.14",
+          "level": "info"
+        },
+        {
+          "n": 90,
+          "text": "  Downloaded ipnet v2.11.0",
+          "level": "info"
+        },
+        {
+          "n": 91,
+          "text": "  Downloaded http-body-util v0.1.3",
+          "level": "info"
+        },
+        {
+          "n": 92,
+          "text": "  Downloaded http-body v1.0.1",
+          "level": "info"
+        },
+        {
+          "n": 93,
+          "text": "  Downloaded find-msvc-tools v0.1.9",
+          "level": "info"
+        },
+        {
+          "n": 94,
+          "text": "  Downloaded errno v0.3.14",
+          "level": "info"
+        },
+        {
+          "n": 95,
+          "text": "  Downloaded ring v0.17.14",
+          "level": "info"
+        },
+        {
+          "n": 96,
+          "text": "  Downloaded displaydoc v0.2.5",
+          "level": "info"
+        },
+        {
+          "n": 97,
+          "text": "  Downloaded colorchoice v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 98,
+          "text": "  Downloaded cfg_aliases v0.2.1",
+          "level": "info"
+        },
+        {
+          "n": 99,
+          "text": "  Downloaded cfg-if v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 100,
+          "text": "  Downloaded anstyle-parse v0.2.7",
+          "level": "info"
+        },
+        {
+          "n": 101,
+          "text": "  Downloaded anstyle v1.0.13",
+          "level": "info"
+        },
+        {
+          "n": 102,
+          "text": "  Downloaded tokio-rustls v0.26.4",
+          "level": "info"
+        },
+        {
+          "n": 103,
+          "text": "  Downloaded tokio-macros v2.6.0",
+          "level": "info"
+        },
+        {
+          "n": 104,
+          "text": "  Downloaded tinystr v0.8.2",
+          "level": "info"
+        },
+        {
+          "n": 105,
+          "text": "  Downloaded thread_local v1.1.9",
+          "level": "info"
+        },
+        {
+          "n": 106,
+          "text": "  Downloaded thiserror-impl v2.0.18",
+          "level": "error"
+        },
+        {
+          "n": 107,
+          "text": "  Downloaded thiserror v2.0.18",
+          "level": "error"
+        },
+        {
+          "n": 108,
+          "text": "  Downloaded synstructure v0.13.2",
+          "level": "info"
+        },
+        {
+          "n": 109,
+          "text": "  Downloaded slab v0.4.12",
+          "level": "info"
+        },
+        {
+          "n": 110,
+          "text": "  Downloaded signal-hook-registry v1.4.8",
+          "level": "info"
+        },
+        {
+          "n": 111,
+          "text": "  Downloaded shlex v1.3.0",
+          "level": "info"
+        },
+        {
+          "n": 112,
+          "text": "  Downloaded serde_derive v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 113,
+          "text": "  Downloaded rand_core v0.9.5",
+          "level": "info"
+        },
+        {
+          "n": 114,
+          "text": "  Downloaded quote v1.0.44",
+          "level": "info"
+        },
+        {
+          "n": 115,
+          "text": "  Downloaded ppv-lite86 v0.2.21",
+          "level": "info"
+        },
+        {
+          "n": 116,
+          "text": "  Downloaded pin-project-lite v0.2.16",
+          "level": "info"
+        },
+        {
+          "n": 117,
+          "text": "  Downloaded nu-ansi-term v0.50.3",
+          "level": "info"
+        },
+        {
+          "n": 118,
+          "text": "  Downloaded httpdate v1.0.3",
+          "level": "info"
+        },
+        {
+          "n": 119,
+          "text": "  Downloaded heck v0.5.0",
+          "level": "info"
+        },
+        {
+          "n": 120,
+          "text": "  Downloaded futures-core v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 121,
+          "text": "  Downloaded form_urlencoded v1.2.2",
+          "level": "info"
+        },
+        {
+          "n": 122,
+          "text": "  Downloaded clap_lex v1.0.0",
+          "level": "info"
+        },
+        {
+          "n": 123,
+          "text": "  Downloaded atomic-waker v1.1.2",
+          "level": "info"
+        },
+        {
+          "n": 124,
+          "text": "  Downloaded anstyle-query v1.1.5",
+          "level": "info"
+        },
+        {
+          "n": 125,
+          "text": "  Downloaded zeroize v1.8.2",
+          "level": "info"
+        },
+        {
+          "n": 126,
+          "text": "  Downloaded yoke v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 127,
+          "text": "  Downloaded writeable v0.6.2",
+          "level": "info"
+        },
+        {
+          "n": 128,
+          "text": "  Downloaded tracing-log v0.2.0",
+          "level": "info"
+        },
+        {
+          "n": 129,
+          "text": "  Downloaded tower-layer v0.3.3",
+          "level": "info"
+        },
+        {
+          "n": 130,
+          "text": "  Downloaded sync_wrapper v1.0.2",
+          "level": "info"
+        },
+        {
+          "n": 131,
+          "text": "  Downloaded serde_urlencoded v0.7.1",
+          "level": "info"
+        },
+        {
+          "n": 132,
+          "text": "  Downloaded rustc-hash v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 133,
+          "text": "  Downloaded potential_utf v0.1.4",
+          "level": "info"
+        },
+        {
+          "n": 134,
+          "text": "  Downloaded pin-utils v0.1.0",
+          "level": "info"
+        },
+        {
+          "n": 135,
+          "text": "  Downloaded percent-encoding v2.3.2",
+          "level": "info"
+        },
+        {
+          "n": 136,
+          "text": "  Downloaded mime v0.3.17",
+          "level": "info"
+        },
+        {
+          "n": 137,
+          "text": "  Downloaded matchers v0.2.0",
+          "level": "info"
+        },
+        {
+          "n": 138,
+          "text": "  Downloaded lru-slab v0.1.2",
+          "level": "info"
+        },
+        {
+          "n": 139,
+          "text": "  Downloaded lazy_static v1.5.0",
+          "level": "info"
+        },
+        {
+          "n": 140,
+          "text": "  Downloaded itoa v1.0.17",
+          "level": "info"
+        },
+        {
+          "n": 141,
+          "text": "  Downloaded is_terminal_polyfill v1.70.2",
+          "level": "info"
+        },
+        {
+          "n": 142,
+          "text": "  Downloaded idna_adapter v1.2.1",
+          "level": "info"
+        },
+        {
+          "n": 143,
+          "text": "  Downloaded futures-task v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 144,
+          "text": "  Downloaded equivalent v1.0.2",
+          "level": "info"
+        },
+        {
+          "n": 145,
+          "text": "  Downloaded yoke-derive v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 146,
+          "text": "  Downloaded want v0.3.1",
+          "level": "info"
+        },
+        {
+          "n": 147,
+          "text": "  Downloaded utf8parse v0.2.2",
+          "level": "info"
+        },
+        {
+          "n": 148,
+          "text": "  Downloaded utf8_iter v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 149,
+          "text": "  Downloaded untrusted v0.9.0",
+          "level": "info"
+        },
+        {
+          "n": 150,
+          "text": "  Downloaded try-lock v0.2.5",
+          "level": "info"
+        },
+        {
+          "n": 151,
+          "text": "  Downloaded tower-service v0.3.3",
+          "level": "info"
+        },
+        {
+          "n": 152,
+          "text": "  Downloaded strsim v0.11.1",
+          "level": "info"
+        },
+        {
+          "n": 153,
+          "text": "  Downloaded scopeguard v1.2.0",
+          "level": "info"
+        },
+        {
+          "n": 154,
+          "text": "  Downloaded tinyvec_macros v0.1.1",
+          "level": "info"
+        },
+        {
+          "n": 155,
+          "text": "  Downloaded subtle v2.6.1",
+          "level": "info"
+        },
+        {
+          "n": 156,
+          "text": "  Downloaded stable_deref_trait v1.2.1",
+          "level": "info"
+        },
+        {
+          "n": 157,
+          "text": "  Downloaded serde_core v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 158,
+          "text": "   Compiling proc-macro2 v1.0.106",
+          "level": "info"
+        },
+        {
+          "n": 159,
+          "text": "   Compiling unicode-ident v1.0.24",
+          "level": "info"
+        },
+        {
+          "n": 160,
+          "text": "   Compiling quote v1.0.44",
+          "level": "info"
+        },
+        {
+          "n": 161,
+          "text": "   Compiling libc v0.2.182",
+          "level": "info"
+        },
+        {
+          "n": 162,
+          "text": "   Compiling cfg-if v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 163,
+          "text": "   Compiling smallvec v1.15.1",
+          "level": "info"
+        },
+        {
+          "n": 164,
+          "text": "   Compiling stable_deref_trait v1.2.1",
+          "level": "info"
+        },
+        {
+          "n": 165,
+          "text": "   Compiling pin-project-lite v0.2.16",
+          "level": "info"
+        },
+        {
+          "n": 166,
+          "text": "   Compiling itoa v1.0.17",
+          "level": "info"
+        },
+        {
+          "n": 167,
+          "text": "   Compiling bytes v1.11.1",
+          "level": "info"
+        },
+        {
+          "n": 168,
+          "text": "   Compiling once_cell v1.21.3",
+          "level": "info"
+        },
+        {
+          "n": 169,
+          "text": "   Compiling parking_lot_core v0.9.12",
+          "level": "info"
+        },
+        {
+          "n": 170,
+          "text": "   Compiling futures-core v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 171,
+          "text": "   Compiling scopeguard v1.2.0",
+          "level": "info"
+        },
+        {
+          "n": 172,
+          "text": "   Compiling log v0.4.29",
+          "level": "info"
+        },
+        {
+          "n": 173,
+          "text": "   Compiling shlex v1.3.0",
+          "level": "info"
+        },
+        {
+          "n": 174,
+          "text": "   Compiling find-msvc-tools v0.1.9",
+          "level": "info"
+        },
+        {
+          "n": 175,
+          "text": "   Compiling serde_core v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 176,
+          "text": "   Compiling litemap v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 177,
+          "text": "   Compiling writeable v0.6.2",
+          "level": "info"
+        },
+        {
+          "n": 178,
+          "text": "   Compiling lock_api v0.4.14",
+          "level": "info"
+        },
+        {
+          "n": 179,
+          "text": "   Compiling serde v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 180,
+          "text": "   Compiling httparse v1.10.1",
+          "level": "info"
+        },
+        {
+          "n": 181,
+          "text": "   Compiling tracing-core v0.1.36",
+          "level": "info"
+        },
+        {
+          "n": 182,
+          "text": "   Compiling slab v0.4.12",
+          "level": "info"
+        },
+        {
+          "n": 183,
+          "text": "   Compiling cc v1.2.56",
+          "level": "info"
+        },
+        {
+          "n": 184,
+          "text": "   Compiling futures-task v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 185,
+          "text": "   Compiling percent-encoding v2.3.2",
+          "level": "info"
+        },
+        {
+          "n": 186,
+          "text": "   Compiling icu_normalizer_data v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 187,
+          "text": "   Compiling tower-service v0.3.3",
+          "level": "info"
+        },
+        {
+          "n": 188,
+          "text": "   Compiling icu_properties_data v2.1.2",
+          "level": "info"
+        },
+        {
+          "n": 189,
+          "text": "   Compiling zeroize v1.8.2",
+          "level": "info"
+        },
+        {
+          "n": 190,
+          "text": "   Compiling futures-util v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 191,
+          "text": "   Compiling http v1.4.0",
+          "level": "info"
+        },
+        {
+          "n": 192,
+          "text": "   Compiling untrusted v0.9.0",
+          "level": "info"
+        },
+        {
+          "n": 193,
+          "text": "   Compiling try-lock v0.2.5",
+          "level": "info"
+        },
+        {
+          "n": 194,
+          "text": "   Compiling sync_wrapper v1.0.2",
+          "level": "info"
+        },
+        {
+          "n": 195,
+          "text": "   Compiling rustls-pki-types v1.14.0",
+          "level": "info"
+        },
+        {
+          "n": 196,
+          "text": "   Compiling futures-channel v0.3.32",
+          "level": "info"
+        },
+        {
+          "n": 197,
+          "text": "   Compiling want v0.3.1",
+          "level": "info"
+        },
+        {
+          "n": 198,
+          "text": "   Compiling httpdate v1.0.3",
+          "level": "info"
+        },
+        {
+          "n": 199,
+          "text": "   Compiling atomic-waker v1.1.2",
+          "level": "info"
+        },
+        {
+          "n": 200,
+          "text": "   Compiling tower-layer v0.3.3",
+          "level": "info"
+        },
+        {
+          "n": 201,
+          "text": "   Compiling pin-utils v0.1.0",
+          "level": "info"
+        },
+        {
+          "n": 202,
+          "text": "   Compiling rustls v0.23.36",
+          "level": "info"
+        },
+        {
+          "n": 203,
+          "text": "   Compiling zmij v1.0.21",
+          "level": "info"
+        },
+        {
+          "n": 204,
+          "text": "   Compiling form_urlencoded v1.2.2",
+          "level": "info"
+        },
+        {
+          "n": 205,
+          "text": "   Compiling ipnet v2.11.0",
+          "level": "info"
+        },
+        {
+          "n": 206,
+          "text": "   Compiling base64 v0.22.1",
+          "level": "info"
+        },
+        {
+          "n": 207,
+          "text": "   Compiling ryu v1.0.23",
+          "level": "info"
+        },
+        {
+          "n": 208,
+          "text": "   Compiling utf8parse v0.2.2",
+          "level": "info"
+        },
+        {
+          "n": 209,
+          "text": "   Compiling serde_json v1.0.149",
+          "level": "info"
+        },
+        {
+          "n": 210,
+          "text": "   Compiling http-body v1.0.1",
+          "level": "info"
+        },
+        {
+          "n": 211,
+          "text": "   Compiling subtle v2.6.1",
+          "level": "info"
+        },
+        {
+          "n": 212,
+          "text": "   Compiling autocfg v1.5.0",
+          "level": "info"
+        },
+        {
+          "n": 213,
+          "text": "   Compiling anstyle-parse v0.2.7",
+          "level": "info"
+        },
+        {
+          "n": 214,
+          "text": "   Compiling ring v0.17.14",
+          "level": "info"
+        },
+        {
+          "n": 215,
+          "text": "   Compiling http-body-util v0.1.3",
+          "level": "info"
+        },
+        {
+          "n": 216,
+          "text": "   Compiling memchr v2.8.0",
+          "level": "info"
+        },
+        {
+          "n": 217,
+          "text": "   Compiling errno v0.3.14",
+          "level": "info"
+        },
+        {
+          "n": 218,
+          "text": "   Compiling mio v1.1.1",
+          "level": "info"
+        },
+        {
+          "n": 219,
+          "text": "   Compiling socket2 v0.6.2",
+          "level": "info"
+        },
+        {
+          "n": 220,
+          "text": "   Compiling getrandom v0.2.17",
+          "level": "info"
+        },
+        {
+          "n": 221,
+          "text": "   Compiling syn v2.0.116",
+          "level": "info"
+        },
+        {
+          "n": 222,
+          "text": "   Compiling signal-hook-registry v1.4.8",
+          "level": "info"
+        },
+        {
+          "n": 223,
+          "text": "   Compiling num-traits v0.2.19",
+          "level": "info"
+        },
+        {
+          "n": 224,
+          "text": "   Compiling utf8_iter v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 225,
+          "text": "   Compiling parking_lot v0.12.5",
+          "level": "info"
+        },
+        {
+          "n": 226,
+          "text": "   Compiling is_terminal_polyfill v1.70.2",
+          "level": "info"
+        },
+        {
+          "n": 227,
+          "text": "   Compiling anstyle v1.0.13",
+          "level": "info"
+        },
+        {
+          "n": 228,
+          "text": "   Compiling regex-syntax v0.8.9",
+          "level": "info"
+        },
+        {
+          "n": 229,
+          "text": "   Compiling anstyle-query v1.1.5",
+          "level": "info"
+        },
+        {
+          "n": 230,
+          "text": "   Compiling colorchoice v1.0.4",
+          "level": "info"
+        },
+        {
+          "n": 231,
+          "text": "   Compiling webpki-roots v1.0.6",
+          "level": "info"
+        },
+        {
+          "n": 232,
+          "text": "   Compiling strsim v0.11.1",
+          "level": "info"
+        },
+        {
+          "n": 233,
+          "text": "   Compiling hashbrown v0.16.1",
+          "level": "info"
+        },
+        {
+          "n": 234,
+          "text": "   Compiling anstream v0.6.21",
+          "level": "info"
+        },
+        {
+          "n": 235,
+          "text": "   Compiling clap_lex v1.0.0",
+          "level": "info"
+        },
+        {
+          "n": 236,
+          "text": "   Compiling lazy_static v1.5.0",
+          "level": "info"
+        },
+        {
+          "n": 237,
+          "text": "   Compiling mime v0.3.17",
+          "level": "info"
+        },
+        {
+          "n": 238,
+          "text": "   Compiling heck v0.5.0",
+          "level": "info"
+        },
+        {
+          "n": 239,
+          "text": "   Compiling iri-string v0.7.10",
+          "level": "info"
+        },
+        {
+          "n": 240,
+          "text": "   Compiling anyhow v1.0.101",
+          "level": "info"
+        },
+        {
+          "n": 241,
+          "text": "   Compiling bitflags v2.11.0",
+          "level": "info"
+        },
+        {
+          "n": 242,
+          "text": "   Compiling equivalent v1.0.2",
+          "level": "info"
+        },
+        {
+          "n": 243,
+          "text": "   Compiling clap_builder v4.5.60",
+          "level": "info"
+        },
+        {
+          "n": 244,
+          "text": "   Compiling sharded-slab v0.1.7",
+          "level": "info"
+        },
+        {
+          "n": 245,
+          "text": "   Compiling tracing-log v0.2.0",
+          "level": "info"
+        },
+        {
+          "n": 246,
+          "text": "   Compiling serde_path_to_error v0.1.20",
+          "level": "error"
+        },
+        {
+          "n": 247,
+          "text": "   Compiling thread_local v1.1.9",
+          "level": "info"
+        },
+        {
+          "n": 248,
+          "text": "   Compiling iana-time-zone v0.1.65",
+          "level": "info"
+        },
+        {
+          "n": 249,
+          "text": "   Compiling unsafe-libyaml v0.2.11",
+          "level": "info"
+        },
+        {
+          "n": 250,
+          "text": "   Compiling matchit v0.8.4",
+          "level": "info"
+        },
+        {
+          "n": 251,
+          "text": "   Compiling indexmap v2.13.0",
+          "level": "info"
+        },
+        {
+          "n": 252,
+          "text": "   Compiling nu-ansi-term v0.50.3",
+          "level": "info"
+        },
+        {
+          "n": 253,
+          "text": "   Compiling regex-automata v0.4.14",
+          "level": "info"
+        },
+        {
+          "n": 254,
+          "text": "   Compiling synstructure v0.13.2",
+          "level": "info"
+        },
+        {
+          "n": 255,
+          "text": "   Compiling matchers v0.2.0",
+          "level": "info"
+        },
+        {
+          "n": 256,
+          "text": "   Compiling zerovec-derive v0.11.2",
+          "level": "info"
+        },
+        {
+          "n": 257,
+          "text": "   Compiling displaydoc v0.2.5",
+          "level": "info"
+        },
+        {
+          "n": 258,
+          "text": "   Compiling tokio-macros v2.6.0",
+          "level": "info"
+        },
+        {
+          "n": 259,
+          "text": "   Compiling tracing-attributes v0.1.31",
+          "level": "info"
+        },
+        {
+          "n": 260,
+          "text": "   Compiling serde_derive v1.0.228",
+          "level": "info"
+        },
+        {
+          "n": 261,
+          "text": "   Compiling clap_derive v4.5.55",
+          "level": "info"
+        },
+        {
+          "n": 262,
+          "text": "   Compiling zerofrom-derive v0.1.6",
+          "level": "info"
+        },
+        {
+          "n": 263,
+          "text": "   Compiling yoke-derive v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 264,
+          "text": "   Compiling tokio v1.49.0",
+          "level": "info"
+        },
+        {
+          "n": 265,
+          "text": "   Compiling zerofrom v0.1.6",
+          "level": "info"
+        },
+        {
+          "n": 266,
+          "text": "   Compiling tracing v0.1.44",
+          "level": "info"
+        },
+        {
+          "n": 267,
+          "text": "   Compiling yoke v0.8.1",
+          "level": "info"
+        },
+        {
+          "n": 268,
+          "text": "   Compiling axum-core v0.5.6",
+          "level": "info"
+        },
+        {
+          "n": 269,
+          "text": "   Compiling tracing-subscriber v0.3.22",
+          "level": "info"
+        },
+        {
+          "n": 270,
+          "text": "   Compiling zerovec v0.11.5",
+          "level": "info"
+        },
+        {
+          "n": 271,
+          "text": "   Compiling zerotrie v0.2.3",
+          "level": "info"
+        },
+        {
+          "n": 272,
+          "text": "   Compiling clap v4.5.60",
+          "level": "info"
+        },
+        {
+          "n": 273,
+          "text": "   Compiling tinystr v0.8.2",
+          "level": "info"
+        },
+        {
+          "n": 274,
+          "text": "   Compiling potential_utf v0.1.4",
+          "level": "info"
+        },
+        {
+          "n": 275,
+          "text": "   Compiling icu_collections v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 276,
+          "text": "   Compiling icu_locale_core v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 277,
+          "text": "   Compiling serde_urlencoded v0.7.1",
+          "level": "info"
+        },
+        {
+          "n": 278,
+          "text": "   Compiling serde_yaml v0.9.34+deprecated",
+          "level": "info"
+        },
+        {
+          "n": 279,
+          "text": "   Compiling chrono v0.4.43",
+          "level": "info"
+        },
+        {
+          "n": 280,
+          "text": "   Compiling icu_provider v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 281,
+          "text": "   Compiling icu_properties v2.1.2",
+          "level": "info"
+        },
+        {
+          "n": 282,
+          "text": "   Compiling icu_normalizer v2.1.1",
+          "level": "info"
+        },
+        {
+          "n": 283,
+          "text": "   Compiling idna_adapter v1.2.1",
+          "level": "info"
+        },
+        {
+          "n": 284,
+          "text": "   Compiling idna v1.1.0",
+          "level": "info"
+        },
+        {
+          "n": 285,
+          "text": "   Compiling url v2.5.8",
+          "level": "info"
+        },
+        {
+          "n": 286,
+          "text": "   Compiling hyper v1.8.1",
+          "level": "info"
+        },
+        {
+          "n": 287,
+          "text": "   Compiling tower v0.5.3",
+          "level": "info"
+        },
+        {
+          "n": 288,
+          "text": "   Compiling tower-http v0.6.8",
+          "level": "info"
+        },
+        {
+          "n": 289,
+          "text": "   Compiling hyper-util v0.1.20",
+          "level": "info"
+        },
+        {
+          "n": 290,
+          "text": "   Compiling axum v0.8.8",
+          "level": "info"
+        },
+        {
+          "n": 291,
+          "text": "   Compiling rustls-webpki v0.103.9",
+          "level": "info"
+        },
+        {
+          "n": 292,
+          "text": "   Compiling tokio-rustls v0.26.4",
+          "level": "info"
+        },
+        {
+          "n": 293,
+          "text": "   Compiling hyper-rustls v0.27.7",
+          "level": "info"
+        },
+        {
+          "n": 294,
+          "text": "   Compiling reqwest v0.12.28",
+          "level": "info"
+        },
+        {
+          "n": 295,
+          "text": "   Compiling susui v0.1.0 (/home/user/susui)",
+          "level": "success"
+        },
+        {
+          "n": 296,
+          "text": "    Finished `release` profile [optimized] target(s) in 1m 31s",
+          "level": "success"
+        }
+      ],
+      "inStore": true
+    },
+    {
+      "id": 2,
+      "derivation": "checks.x86_64-linux.clippy",
+      "status": "passed",
+      "duration": "2s",
+      "time": "2026-02-20T05:52:12Z",
+      "branch": "claude/build-static-dashboard-xMZrI",
+      "commit": "56af2a28f69984cee67c6dea7492fa9b71da2bd4",
+      "owner": "git",
+      "repo": "SusSystems",
+      "flakeRef": ".",
+      "overrideInputs": [],
+      "log": [
+        {
+          "n": 1,
+          "text": "\u2500\u2500\u2500 cargo clippy -- -D warnings (checks.x86_64-linux.clippy) \u2500\u2500\u2500",
+          "level": "dim"
+        },
+        {
+          "n": 2,
+          "text": "Checking susui v0.1.0 (/home/user/susui)",
+          "level": "info"
+        },
+        {
+          "n": 3,
+          "text": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.28s",
+          "level": "success"
+        }
+      ],
+      "inStore": true
+    },
+    {
+      "id": 3,
+      "derivation": "checks.x86_64-linux.susui",
+      "status": "passed",
+      "duration": "3s",
+      "time": "2026-02-20T05:52:12Z",
+      "branch": "claude/build-static-dashboard-xMZrI",
+      "commit": "56af2a28f69984cee67c6dea7492fa9b71da2bd4",
+      "owner": "git",
+      "repo": "SusSystems",
+      "flakeRef": ".",
+      "overrideInputs": [],
+      "log": [
+        {
+          "n": 1,
+          "text": "\u2500\u2500\u2500 cargo test (checks.x86_64-linux.susui) \u2500\u2500\u2500",
+          "level": "dim"
+        },
+        {
+          "n": 2,
+          "text": "Compiling susui v0.1.0 (/home/user/susui)",
+          "level": "success"
+        },
+        {
+          "n": 3,
+          "text": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s",
+          "level": "success"
+        },
+        {
+          "n": 4,
+          "text": "     Running unittests src/main.rs (target/debug/deps/susui-bc62803a58df5a96)",
+          "level": "info"
+        },
+        {
+          "n": 5,
+          "text": "",
+          "level": "dim"
+        },
+        {
+          "n": 6,
+          "text": "running 13 tests",
+          "level": "dim"
+        },
+        {
+          "n": 7,
+          "text": "test collector::tests::test_build_stats ... ok",
+          "level": "success"
+        },
+        {
+          "n": 8,
+          "text": "test collector::tests::test_classify_log_line ... ok",
+          "level": "success"
+        },
+        {
+          "n": 9,
+          "text": "test collector::tests::test_format_duration ... ok",
+          "level": "success"
+        },
+        {
+          "n": 10,
+          "text": "test collector::tests::test_is_nix_noise ... ok",
+          "level": "success"
+        },
+        {
+          "n": 11,
+          "text": "test collector::tests::test_make_log_lines_filters_noise ... ok",
+          "level": "success"
+        },
+        {
+          "n": 12,
+          "text": "test collector::tests::test_parse_flake_uri ... ok",
+          "level": "success"
+        },
+        {
+          "n": 13,
+          "text": "test collector::tests::test_sort_by_dependency_order ... ok",
+          "level": "success"
+        },
+        {
+          "n": 14,
+          "text": "test collector::tests::test_sort_preserves_order_for_unrelated_checks ... ok",
+          "level": "success"
+        },
+        {
+          "n": 15,
+          "text": "test config::tests::test_allow_filter_matches ... ok",
+          "level": "success"
+        },
+        {
+          "n": 16,
+          "text": "test config::tests::test_allow_filter_rejects ... ok",
+          "level": "success"
+        },
+        {
+          "n": 17,
+          "text": "test config::tests::test_config_parse ... ok",
+          "level": "success"
+        },
+        {
+          "n": 18,
+          "text": "test config::tests::test_deny_filter ... ok",
+          "level": "success"
+        },
+        {
+          "n": 19,
+          "text": "test config::tests::test_empty_filters_allow_all ... ok",
+          "level": "success"
+        },
+        {
+          "n": 20,
+          "text": "",
+          "level": "dim"
+        },
+        {
+          "n": 21,
+          "text": "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "level": "success"
+        }
+      ],
+      "inStore": true
+    }
+  ]
+}

@@ -593,7 +593,7 @@ fn try_cached_log(nix: &str, log_ref: &str, source_label: &str) -> Option<Vec<Lo
 
     let short_ref = if log_ref.len() > 60 {
         // Shorten store paths
-        log_ref.split('/').last().unwrap_or(log_ref)
+        log_ref.split('/').next_back().unwrap_or(log_ref)
     } else {
         log_ref
     };
@@ -623,7 +623,7 @@ fn try_cached_log(nix: &str, log_ref: &str, source_label: &str) -> Option<Vec<Lo
 /// it's a historical log from a prior build.
 fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
     // Extract derivation name: "/nix/store/<hash>-<name>.drv" → "<name>"
-    let drv_filename = drv_path.split('/').last().unwrap_or("");
+    let drv_filename = drv_path.split('/').next_back().unwrap_or("");
     // Remove the leading hash (32 chars + dash)
     let name_with_ext = if drv_filename.len() > 33 && drv_filename.as_bytes()[32] == b'-' {
         &drv_filename[33..]
@@ -662,10 +662,10 @@ fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
                         if let Ok(meta) = file_entry.metadata() {
                             let size = meta.len();
                             // Prefer the largest log file (most build output = most useful)
-                            if size > 0 {
-                                if best_path.as_ref().map_or(true, |(_, s)| size > *s) {
-                                    best_path = Some((file_entry.path(), size));
-                                }
+                            if size > 0
+                                && best_path.as_ref().is_none_or(|(_, s)| size > *s)
+                            {
+                                best_path = Some((file_entry.path(), size));
                             }
                         }
                     }
@@ -708,7 +708,7 @@ fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
         level: "dim".to_string(),
     }, LogLine {
         n: 2,
-        text: format!("note: source has changed since this log was produced (drv hash differs)"),
+        text: "note: source has changed since this log was produced (drv hash differs)".to_string(),
         level: "dim".to_string(),
     }];
 
@@ -752,9 +752,7 @@ fn try_cargo_test_fallback(target: &str) -> Option<Vec<LogLine>> {
             "/usr/bin/cargo".to_string(),
         ];
         let found = cargo_path.iter().find(|p| std::path::Path::new(p).exists());
-        if found.is_none() {
-            return None;
-        }
+        found?;
     }
 
     // Resolve cargo binary
@@ -877,7 +875,7 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
                     lines.push((format!("system:   {}", sys), "info".to_string()));
                 }
                 if let Some(builder) = obj.get("builder").and_then(|v| v.as_str()) {
-                    let short = builder.split('/').last().unwrap_or(builder);
+                    let short = builder.split('/').next_back().unwrap_or(builder);
                     lines.push((format!("builder:  {}", short), "info".to_string()));
                 }
 
@@ -886,7 +884,7 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
                     for key in &["pname", "version", "src", "cargoDeps", "cargoBuildType"] {
                         if let Some(val) = env_map.get(*key).and_then(|v| v.as_str()) {
                             let display = if val.starts_with("/nix/store/") {
-                                val.split('/').last().unwrap_or(val)
+                                val.split('/').next_back().unwrap_or(val)
                             } else {
                                 val
                             };
@@ -926,7 +924,7 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
                         if let Some(val) = env_map.get(*key).and_then(|v| v.as_str()) {
                             let deps: Vec<&str> = val
                                 .split_whitespace()
-                                .filter_map(|p| p.split('/').last())
+                                .filter_map(|p| p.split('/').next_back())
                                 .collect();
                             if !deps.is_empty() {
                                 lines.push((String::new(), "dim".to_string()));
@@ -1026,7 +1024,7 @@ pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
 /// checks, and finally dev shells.  Within each group, builds sharing the
 /// same derivation path are kept adjacent so the dashboard reads like a
 /// continuous build log where tests run right after the build they verify.
-fn sort_by_dependency_order(builds: &mut Vec<Build>) {
+fn sort_by_dependency_order(builds: &mut [Build]) {
     use std::collections::HashSet;
 
     // Collect drvPaths that belong to package outputs (owned to avoid borrow conflict)
