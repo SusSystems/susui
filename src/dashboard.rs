@@ -75,6 +75,7 @@ const statusConfig = {
   running: { color: T.color.running400, bg: T.color.running400 + "18", label: "Running", icon: "↻" },
   pending: { color: T.color.pending400, bg: T.color.pending400 + "18", label: "Pending", icon: "◦" },
   skipped: { color: T.color.skipped400, bg: T.color.skipped400 + "18", label: "Skipped", icon: "—" },
+  unknown: { color: T.color.textTertiary, bg: T.color.textTertiary + "18", label: "Not built", icon: "?" },
 };
 
 // ─── CSS ────────────────────────────────────────────────────
@@ -323,7 +324,7 @@ function OverridePill({ inputName, type, owner, repo, ref: gitRef, pr, flakeRef 
 }
 
 // ─── NIX BUILD ROW ──────────────────────────────────────────
-function NixBuildRow({ build, isExpanded, onToggle }) {
+function NixBuildRow({ build, isExpanded, onToggle, grouped }) {
   const cfg = statusConfig[build.status] || statusConfig.pending;
   const hasOv = build.overrideInputs && build.overrideInputs.length > 0;
   const commitUrl = build.owner && build.repo && build.commit
@@ -379,16 +380,18 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
               <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.sm, fontWeight: 600, color: T.color.textPrimary }}>${build.derivation}</span>
             </${DataHint}>
             <${StatusBadge} status=${build.status} size="sm" />
+            ${build.inStore && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output exists in the local nix store."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pass400 + "12", color: T.color.pass400, border: "1px solid " + T.color.pass400 + "20", letterSpacing: "0.04em" }}>● IN STORE</span></${DataHint}>`}
+            ${!build.inStore && build.status !== "failed" && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output not in local store. Run the build command to produce it."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.textTertiary + "12", color: T.color.textTertiary, border: "1px solid " + T.color.textTertiary + "20", letterSpacing: "0.04em" }}>◌ NOT BUILT</span></${DataHint}>`}
             ${hasOv && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pending400 + "15", color: T.color.pending400, border: "1px solid " + T.color.pending400 + "20", letterSpacing: "0.04em" }}>⚑ ${build.overrideInputs.length} OVERRIDE${build.overrideInputs.length > 1 ? "S" : ""}</span>`}
             ${build.pr && html`<a href=${"https://github.com/" + build.owner + "/" + build.repo + "/pull/" + build.pr} target="_blank" rel="noopener" class="gh-link" style=${{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: T.font.mono, fontSize: 10, color: T.color.running400, padding: "2px 6px", background: T.color.running400 + "12", borderRadius: T.radius.xs, border: "1px solid " + T.color.running400 + "20" }} onClick=${e => e.stopPropagation()}>PR #${build.pr}</a>`}
           </div>
           <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, color: T.color.textTertiary, flexWrap: "wrap" }}>
-            <${DataHint} commands=${branchHint} position="below"><span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs }}>⎇ ${build.branch || "main"}</span></${DataHint}>
-            <${DataHint} commands=${commitHint} position="below">
+            ${!grouped && html`<${DataHint} commands=${branchHint} position="below"><span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs }}>⎇ ${build.branch || "main"}</span></${DataHint}>`}
+            ${!grouped && html`<${DataHint} commands=${commitHint} position="below">
               ${commitUrl ? html`<a href=${commitUrl} target="_blank" rel="noopener" class="gh-link" style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, display: "inline-flex", alignItems: "center", gap: 4 }} onClick=${e => e.stopPropagation()}><${GHIcon} size=${10} /> ${shortSha}</a>` : html`<span style=${{ fontFamily: T.font.mono }}>${shortSha}</span>`}
-            </${DataHint}>
-            <span>·</span>
-            <${DataHint} commands=${flakeRefHint} position="below" files=${[{ path: "flake.nix", desc: "Flake source" }, { path: "flake.lock", desc: "Pinned deps" }]}><span>${build.flakeRef}</span></${DataHint}>
+            </${DataHint}>`}
+            ${!grouped && html`<span>·</span>`}
+            ${!grouped && html`<${DataHint} commands=${flakeRefHint} position="below" files=${[{ path: "flake.nix", desc: "Flake source" }, { path: "flake.lock", desc: "Pinned deps" }]}><span>${build.flakeRef}</span></${DataHint}>`}
           </div>
         </div>
         <${DataHint} commands=${durationHint} position="above-right">
@@ -400,6 +403,20 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
       </div>
       ${isExpanded && html`
         <div style=${{ background: T.color.surface1, border: "1px solid " + T.color.border, borderTop: "none", borderRadius: "0 0 " + T.radius.lg + " " + T.radius.lg, padding: "0 16px 16px", animation: "fadeIn 200ms ease" }}>
+          ${(build.drvPath || build.storePath) && html`
+            <div style=${{ padding: "12px 0", borderBottom: "1px solid " + T.color.borderSubtle, marginBottom: 12 }}>
+              <div style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Store Paths</div>
+              ${build.drvPath && html`<div style=${{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, width: 32 }}>drv</span>
+                <span style=${{ fontFamily: T.font.mono, fontSize: 11, color: T.color.textSecondary, padding: "2px 8px", background: T.color.surface2, borderRadius: T.radius.xs, wordBreak: "break-all" }}>${build.drvPath}</span>
+              </div>`}
+              ${build.storePath && html`<div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, width: 32 }}>out</span>
+                <span style=${{ fontFamily: T.font.mono, fontSize: 11, color: build.inStore ? T.color.pass400 : T.color.textTertiary, padding: "2px 8px", background: T.color.surface2, borderRadius: T.radius.xs, wordBreak: "break-all" }}>${build.storePath}</span>
+                <span style=${{ fontSize: 9, fontFamily: T.font.mono, color: build.inStore ? T.color.pass400 : T.color.textTertiary }}>${build.inStore ? "● exists" : "◌ missing"}</span>
+              </div>`}
+            </div>
+          `}
           ${hasOv && html`
             <div style=${{ padding: "12px 0", borderBottom: "1px solid " + T.color.borderSubtle, marginBottom: 12 }}>
               <div style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Override Inputs</div>
@@ -435,6 +452,51 @@ function NixBuildRow({ build, isExpanded, onToggle }) {
           </${DataHint}>
         </div>
       `}
+    </div>
+  `;
+}
+
+// ─── COMMIT GROUP ──────────────────────────────────────────
+function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle }) {
+  const shortSha = commit ? commit.slice(0, 7) : "—";
+  const commitUrl = owner && repo && commit
+    ? "https://github.com/" + owner + "/" + repo + "/commit/" + commit : null;
+  const passedCnt = builds.filter(b => b.status === "passed").length;
+  const failedCnt = builds.filter(b => b.status === "failed").length;
+  const inStoreCnt = builds.filter(b => b.inStore).length;
+  const allPassed = failedCnt === 0 && builds.every(b => b.status === "passed" || b.status === "skipped");
+  const groupColor = failedCnt > 0 ? T.color.fail400 : allPassed ? T.color.pass400 : T.color.textTertiary;
+
+  const commitHintCmds = [
+    { label: "Commit details", cmd: "git log -1 --format='%H%n%s%n%an%n%ai' " + shortSha, source: "git" },
+    { label: "Flake metadata", cmd: "nix flake metadata " + (flakeRef || ".") + " --json", source: "nix" },
+  ];
+
+  return html`
+    <div style=${{ marginBottom: 4 }}>
+      <div style=${{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px 6px", borderBottom: "1px solid " + T.color.borderSubtle }}>
+        <div style=${{ width: 4, height: 4, borderRadius: "50%", background: groupColor, flexShrink: 0 }} />
+        <${DataHint} commands=${commitHintCmds} position="below">
+          <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, flexWrap: "wrap" }}>
+            <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs, color: T.color.textSecondary }}>⎇ ${branch || "main"}</span>
+            ${commitUrl
+              ? html`<a href=${commitUrl} target="_blank" rel="noopener" class="gh-link" style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, display: "inline-flex", alignItems: "center", gap: 4 }}><${GHIcon} size=${10} /> ${shortSha}</a>`
+              : html`<span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${shortSha}</span>`
+            }
+            <span style=${{ color: T.color.textTertiary }}>·</span>
+            <span style=${{ color: T.color.textTertiary, fontSize: T.fontSize.xs }}>${flakeRef}</span>
+            <span style=${{ color: T.color.textTertiary }}>·</span>
+            <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary }}>${builds.length} derivation${builds.length !== 1 ? "s" : ""}</span>
+            <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.pass400 }}>${passedCnt}✓</span>
+            ${failedCnt > 0 && html`<span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.fail400 }}>${failedCnt}✕</span>`}
+            <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: inStoreCnt > 0 ? T.color.pass400 : T.color.textTertiary }}>${inStoreCnt}/${builds.length} in store</span>
+          </div>
+        </${DataHint}>
+      </div>
+      ${builds.map(build => html`
+        <${NixBuildRow} key=${build.id} build=${build} isExpanded=${expandedBuild === build.id}
+          onToggle=${() => onToggle(build.id)} grouped=${true} />
+      `)}
     </div>
   `;
 }
@@ -489,8 +551,26 @@ function App() {
     failed: builds.filter(b => b.status === "failed").length,
     running: builds.filter(b => b.status === "running").length,
     pending: builds.filter(b => b.status === "pending").length,
+    unknown: builds.filter(b => b.status === "unknown").length,
   };
   const overrideCnt = builds.filter(b => b.overrideInputs && b.overrideInputs.length > 0).length;
+  const inStoreCnt = builds.filter(b => b.inStore).length;
+
+  // Group filtered builds by commit hash
+  const grouped = useMemo(() => {
+    const groups = [];
+    const seen = new Map();
+    for (const b of filtered) {
+      const key = b.commit + "|" + (b.branch || "") + "|" + b.flakeRef;
+      if (!seen.has(key)) {
+        const group = { commit: b.commit, branch: b.branch, owner: b.owner, repo: b.repo, flakeRef: b.flakeRef, builds: [] };
+        groups.push(group);
+        seen.set(key, group);
+      }
+      seen.get(key).builds.push(b);
+    }
+    return groups;
+  }, [filtered]);
 
   const successRateHint = [
     { label: "Aggregate from build results", cmd: "susui scan . --json | jq '.stats.success_rate'", source: "shell" },
@@ -557,10 +637,11 @@ function App() {
         <div class="animate-in stagger-1" style=${{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap" }}>
           <${MetricCard} label="Success Rate" value=${cnt.all > 0 ? Math.round(cnt.passed / cnt.all * 100) : 0} suffix="%"
             color=${T.color.pass400} hintCommands=${successRateHint} hintNotes="Calculated as passed / total builds." />
-          <${MetricCard} label="Running" value=${cnt.running}
-            sub=${cnt.running > 0 ? "in progress" : "idle"}
-            color=${cnt.running > 0 ? T.color.running400 : null}
-            hintCommands=${runningHint} />
+          <${MetricCard} label="In Store" value=${inStoreCnt} suffix=${"/" + cnt.all}
+            sub=${inStoreCnt === cnt.all ? "all built" : (cnt.all - inStoreCnt) + " not yet built"}
+            color=${inStoreCnt === cnt.all ? T.color.pass400 : null}
+            hintCommands=${[{ label: "Check store presence", cmd: "nix path-info .#<derivation>", source: "nix" }]}
+            hintNotes="Number of derivation outputs present in the local nix store." />
           <${MetricCard} label="Overridden" value=${overrideCnt} sub="builds with --override-input"
             hintCommands=${overrideHint} />
           <${MetricCard} label="Failed" value=${cnt.failed}
@@ -573,6 +654,7 @@ function App() {
             <${FilterTab} label="All" count=${cnt.all} active=${filter === "all"} onClick=${() => setFilter("all")} />
             <${FilterTab} label="Passed" count=${cnt.passed} active=${filter === "passed"} onClick=${() => setFilter("passed")} color=${T.color.pass400} />
             <${FilterTab} label="Failed" count=${cnt.failed} active=${filter === "failed"} onClick=${() => setFilter("failed")} color=${T.color.fail400} />
+            <${FilterTab} label="Not Built" count=${cnt.unknown} active=${filter === "unknown"} onClick=${() => setFilter("unknown")} color=${T.color.textTertiary} />
             <${FilterTab} label="Running" count=${cnt.running} active=${filter === "running"} onClick=${() => setFilter("running")} color=${T.color.running400} />
             <${FilterTab} label="Pending" count=${cnt.pending} active=${filter === "pending"} onClick=${() => setFilter("pending")} color=${T.color.pending400} />
           </div>
@@ -584,9 +666,14 @@ function App() {
           ${filtered.length === 0 && html`
             <div style=${{ padding: 40, textAlign: "center", color: T.color.textTertiary, fontSize: T.fontSize.sm }}>No builds match the current filter.</div>
           `}
-          ${filtered.map(build => html`
-            <${NixBuildRow} key=${build.id} build=${build} isExpanded=${expandedBuild === build.id} onToggle=${() => setExpandedBuild(expandedBuild === build.id ? null : build.id)} />
-          `)}
+          ${grouped.length === 1
+            ? grouped[0].builds.length === 1
+              ? html`<${NixBuildRow} key=${grouped[0].builds[0].id} build=${grouped[0].builds[0]} isExpanded=${expandedBuild === grouped[0].builds[0].id} onToggle=${() => setExpandedBuild(expandedBuild === grouped[0].builds[0].id ? null : grouped[0].builds[0].id)} />`
+              : html`<${CommitGroup} key=${grouped[0].commit} ...${grouped[0]} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} />`
+            : grouped.map(g => html`
+              <${CommitGroup} key=${g.commit} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} />
+            `)
+          }
         </div>
         <div style=${{ marginTop: 40, paddingTop: 24, borderTop: "1px solid " + T.color.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style=${{ fontSize: T.fontSize.xs, color: T.color.textTertiary }}>sus ui · nix build dashboard</div>

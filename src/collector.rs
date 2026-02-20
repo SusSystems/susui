@@ -324,20 +324,23 @@ pub fn build_derivation(
         pr: None,
         override_inputs,
         log: log_lines,
+        drv_path: None,
+        store_path: None,
+        in_store: success,
     }
 }
 
-/// Evaluate a derivation (dry-run) and return a Build record.
+/// Evaluate a derivation and return a Build record by introspecting the nix store.
 ///
-/// Uses `nix path-info --derivation` which only needs to evaluate the
-/// nix expression — it does NOT require the full dependency closure to be
-/// present in the store, so it works reliably in minimal / container
-/// environments where `nix build --dry-run` would fail with missing .drv
-/// errors.
+/// Uses `nix path-info --derivation` to resolve the .drv path, then:
+///   1. Checks if the output path exists in the store (`nix path-info`)
+///   2. Retrieves cached build logs via multiple strategies
+///   3. Falls back to `nix derivation show` for structured recipe info
 ///
-/// After resolving the .drv path, enriches the log with:
-///   1. `nix log <drv>` — cached build output if the derivation was previously built
-///   2. `nix derivation show` — structured build recipe (builder, phases, inputs, outputs)
+/// The status is determined by store presence:
+///   - Output in store → Passed (previously built successfully)
+///   - Output NOT in store, eval succeeded → Unknown (not yet built)
+///   - Eval failed → Failed
 pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
@@ -365,23 +368,47 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     // the exit code was non-zero due to stderr warnings.
     let eval_ok = success || drv_path.starts_with("/nix/store/");
 
-    // Enrich logs: try cached build log first, then derivation metadata
-    let log_lines = if eval_ok {
-        enrich_eval_logs(&nix, &target, &drv_path)
-    } else {
+    if !eval_ok {
         // Evaluation itself failed — show the filtered error output
         let combined = format!("{}{}", stdout, stderr);
-        make_log_lines(&combined)
+        let log_lines = make_log_lines(&combined);
+        return Build {
+            id,
+            derivation: attr.to_string(),
+            status: BuildStatus::Failed,
+            duration,
+            time: "just now".to_string(),
+            branch,
+            commit,
+            owner,
+            repo,
+            flake_ref: flake_ref.to_string(),
+            pr: None,
+            override_inputs: vec![],
+            log: log_lines,
+            drv_path: None,
+            store_path: None,
+            in_store: false,
+        };
+    }
+
+    // Check if the output path exists in the store
+    let (store_path, in_store) = check_output_in_store(&nix, &target, &drv_path);
+
+    // Determine status from store presence
+    let status = if in_store {
+        BuildStatus::Passed
+    } else {
+        BuildStatus::Unknown
     };
+
+    // Retrieve logs with multiple strategies
+    let log_lines = enrich_eval_logs(&nix, &target, &drv_path, store_path.as_deref());
 
     Build {
         id,
         derivation: attr.to_string(),
-        status: if eval_ok {
-            BuildStatus::Passed
-        } else {
-            BuildStatus::Failed
-        },
+        status,
         duration,
         time: "just now".to_string(),
         branch,
@@ -392,19 +419,93 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
         pr: None,
         override_inputs: vec![],
         log: log_lines,
+        drv_path: Some(drv_path),
+        store_path,
+        in_store,
     }
+}
+
+/// Check whether a derivation's output path exists in the nix store.
+/// Returns (store_path, exists).
+fn check_output_in_store(nix: &str, target: &str, _drv_path: &str) -> (Option<String>, bool) {
+    // Strategy 1: `nix path-info <target>` — asks for the output, not the .drv
+    let (ok, stdout, _) = run_cmd_full(nix, &["path-info", target]);
+    if ok {
+        let path = stdout.trim().to_string();
+        if !path.is_empty() && path.starts_with("/nix/store/") && !path.ends_with(".drv") {
+            return (Some(path), true);
+        }
+    }
+
+    // Strategy 2: parse outputs from `nix derivation show` and check each
+    let (ok, stdout, _) = run_cmd_full(nix, &["derivation", "show", target]);
+    if ok {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            let drvs = parsed
+                .get("derivations")
+                .and_then(|d| d.as_object())
+                .or_else(|| parsed.as_object());
+            if let Some(drvs_map) = drvs {
+                for (_drv_key, drv) in drvs_map {
+                    if let Some(outputs) = drv.get("outputs").and_then(|o| o.as_object()) {
+                        // Check the "out" output first, then any other
+                        for out_name in &["out", "lib", "dev", "bin", "doc"] {
+                            if let Some(out_data) = outputs.get(*out_name) {
+                                let path = out_data
+                                    .as_object()
+                                    .and_then(|o| o.get("path"))
+                                    .and_then(|p| p.as_str())
+                                    .unwrap_or("");
+                                if !path.is_empty() {
+                                    // Check if this path actually exists
+                                    let exists = std::path::Path::new(path).exists();
+                                    if exists {
+                                        return (Some(path.to_string()), true);
+                                    }
+                                    // Return the path even if it doesn't exist — useful for display
+                                    return (Some(path.to_string()), false);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (None, false)
 }
 
 /// Enrich eval-mode logs with cached build output or derivation metadata.
 ///
-/// Priority:
-///   1. `nix log <drv>` — real build output from a previous build
-///   2. `nix derivation show` — structured recipe (builder, phases, deps, outputs)
-fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine> {
-    // Try cached build log first
-    if let Some(log_lines) = try_cached_log(nix, drv_path) {
+/// Tries multiple strategies in order:
+///   1. `nix log <target>` — flake ref based log lookup
+///   2. `nix log <drv>` — derivation path based lookup
+///   3. `nix log <output_path>` — output path based lookup
+///   4. `nix derivation show` — structured recipe as fallback
+fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<&str>) -> Vec<LogLine> {
+    // Strategy 1: try `nix log` with the flake target ref
+    if let Some(log_lines) = try_cached_log(nix, target, "flake target") {
         if !log_lines.is_empty() {
             return log_lines;
+        }
+    }
+
+    // Strategy 2: try `nix log` with the .drv path
+    if drv_path.starts_with("/nix/store/") {
+        if let Some(log_lines) = try_cached_log(nix, drv_path, "derivation") {
+            if !log_lines.is_empty() {
+                return log_lines;
+            }
+        }
+    }
+
+    // Strategy 3: try `nix log` with the output store path
+    if let Some(out_path) = store_path {
+        if let Some(log_lines) = try_cached_log(nix, out_path, "output path") {
+            if !log_lines.is_empty() {
+                return log_lines;
+            }
         }
     }
 
@@ -413,8 +514,8 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine> {
 }
 
 /// Try to fetch a cached build log via `nix log`.
-fn try_cached_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
-    let (ok, stdout, _stderr) = run_cmd_full(nix, &["log", drv_path]);
+fn try_cached_log(nix: &str, log_ref: &str, source_label: &str) -> Option<Vec<LogLine>> {
+    let (ok, stdout, _stderr) = run_cmd_full(nix, &["log", log_ref]);
     if !ok || stdout.trim().is_empty() {
         return None;
     }
@@ -424,10 +525,17 @@ fn try_cached_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
         return None;
     }
 
+    let short_ref = if log_ref.len() > 60 {
+        // Shorten store paths
+        log_ref.split('/').last().unwrap_or(log_ref)
+    } else {
+        log_ref
+    };
+
     // Prepend a header so it's clear this is a cached log
     let mut result = vec![LogLine {
         n: 1,
-        text: format!("─── cached build log ({}) ───", drv_path.split('/').last().unwrap_or(drv_path)),
+        text: format!("─── cached build log ({}: {}) ───", source_label, short_ref),
         level: "dim".to_string(),
     }];
 
@@ -786,6 +894,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                 duration: "1s".into(), time: "now".into(), branch: None,
                 commit: "abc".into(), owner: None, repo: None,
                 flake_ref: ".".into(), pr: None, override_inputs: vec![], log: vec![],
+                drv_path: None, store_path: None, in_store: true,
             },
             Build {
                 id: 2, derivation: "b".into(), status: BuildStatus::Failed,
@@ -798,6 +907,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                     git_ref: Some("main".into()), pr: None,
                 }],
                 log: vec![],
+                drv_path: None, store_path: None, in_store: false,
             },
         ];
         let stats = BuildStats::from_builds(&builds);
@@ -805,6 +915,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
         assert_eq!(stats.passed, 1);
         assert_eq!(stats.failed, 1);
         assert_eq!(stats.overridden, 1);
+        assert_eq!(stats.in_store, 1);
         assert!((stats.success_rate - 50.0).abs() < 0.01);
     }
 }

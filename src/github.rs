@@ -22,6 +22,7 @@ fn build_status_to_gh_state(status: &BuildStatus) -> &'static str {
         BuildStatus::Running => "pending",
         BuildStatus::Pending => "pending",
         BuildStatus::Skipped => "success",
+        BuildStatus::Unknown => "pending",
     }
 }
 
@@ -33,6 +34,7 @@ fn build_status_to_conclusion(status: &BuildStatus) -> &'static str {
         BuildStatus::Running => "neutral",
         BuildStatus::Pending => "neutral",
         BuildStatus::Skipped => "cancelled",
+        BuildStatus::Unknown => "neutral",
     }
 }
 

@@ -9,6 +9,8 @@ pub enum BuildStatus {
     Running,
     Pending,
     Skipped,
+    /// Evaluation succeeded but output is not in the store (not yet built)
+    Unknown,
 }
 
 impl std::fmt::Display for BuildStatus {
@@ -19,6 +21,7 @@ impl std::fmt::Display for BuildStatus {
             Self::Running => write!(f, "running"),
             Self::Pending => write!(f, "pending"),
             Self::Skipped => write!(f, "skipped"),
+            Self::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -72,6 +75,15 @@ pub struct Build {
     pub override_inputs: Vec<OverrideInput>,
     #[serde(default)]
     pub log: Vec<LogLine>,
+    /// The .drv store path for this derivation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drv_path: Option<String>,
+    /// The output store path (if known)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_path: Option<String>,
+    /// Whether the output is present in the nix store (i.e. previously built)
+    #[serde(default)]
+    pub in_store: bool,
 }
 
 /// Summary stats for the dashboard
@@ -83,7 +95,9 @@ pub struct BuildStats {
     pub running: usize,
     pub pending: usize,
     pub skipped: usize,
+    pub unknown: usize,
     pub overridden: usize,
+    pub in_store: usize,
     pub success_rate: f64,
 }
 
@@ -95,7 +109,9 @@ impl BuildStats {
         let running = builds.iter().filter(|b| b.status == BuildStatus::Running).count();
         let pending = builds.iter().filter(|b| b.status == BuildStatus::Pending).count();
         let skipped = builds.iter().filter(|b| b.status == BuildStatus::Skipped).count();
+        let unknown = builds.iter().filter(|b| b.status == BuildStatus::Unknown).count();
         let overridden = builds.iter().filter(|b| !b.override_inputs.is_empty()).count();
+        let in_store = builds.iter().filter(|b| b.in_store).count();
         let success_rate = if all > 0 {
             (passed as f64 / all as f64) * 100.0
         } else {
@@ -108,7 +124,9 @@ impl BuildStats {
             running,
             pending,
             skipped,
+            unknown,
             overridden,
+            in_store,
             success_rate,
         }
     }

@@ -179,19 +179,22 @@ fn cmd_scan(
                 BuildStatus::Running => "↻",
                 BuildStatus::Pending => "◦",
                 BuildStatus::Skipped => "—",
+                BuildStatus::Unknown => "?",
             };
             let ov_mark = if !build.override_inputs.is_empty() {
                 format!(" ⚑{}", build.override_inputs.len())
             } else {
                 String::new()
             };
+            let store_mark = if build.in_store { "" } else { " ◌" };
             println!(
-                "│  {} {} {} {}{}",
+                "│  {} {} {} {}{}{}",
                 icon,
                 build.status,
                 truncate(&build.derivation, 35),
                 build.duration,
-                ov_mark
+                ov_mark,
+                store_mark
             );
         }
         println!("╰───────────────────────────────────────────────╯");
