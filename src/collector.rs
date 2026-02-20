@@ -519,7 +519,30 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
         }
     }
 
-    // Fall back to derivation metadata
+    // Strategy 4: search for a previous build log by derivation name.
+    // When the source changes, the drv hash changes but the derivation name
+    // (e.g. "susui-0.1.0") stays the same. Look in the nix log cache for any
+    // prior build of the same derivation name.
+    if let Some(log_lines) = try_historical_log(nix, drv_path) {
+        if !log_lines.is_empty() {
+            // Combine: show the historical log first, then derivation metadata
+            let mut combined = log_lines;
+            let separator_n = combined.len() + 1;
+            combined.push(LogLine {
+                n: separator_n,
+                text: String::new(),
+                level: "dim".to_string(),
+            });
+            let meta = derivation_info_lines(nix, target, drv_path);
+            for (i, mut line) in meta.into_iter().enumerate() {
+                line.n = separator_n + 1 + i;
+                combined.push(line);
+            }
+            return combined;
+        }
+    }
+
+    // Fall back to derivation metadata only
     derivation_info_lines(nix, target, drv_path)
 }
 
@@ -551,6 +574,113 @@ fn try_cached_log(nix: &str, log_ref: &str, source_label: &str) -> Option<Vec<Lo
 
     for (i, mut line) in lines.into_iter().enumerate() {
         line.n = i + 2;
+        result.push(line);
+    }
+
+    Some(result)
+}
+
+/// Search /nix/var/log/nix/drvs/ for a previous build log of the same derivation name.
+///
+/// When the source changes, the nix store hash changes but the derivation name
+/// (e.g. "susui-0.1.0") stays the same. This function finds logs from prior builds
+/// by matching the name portion of the .drv filename.
+///
+/// Returns the most recent log (largest file, heuristic) with a header indicating
+/// it's a historical log from a prior build.
+fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
+    // Extract derivation name: "/nix/store/<hash>-<name>.drv" → "<name>"
+    let drv_filename = drv_path.split('/').last().unwrap_or("");
+    // Remove the leading hash (32 chars + dash)
+    let name_with_ext = if drv_filename.len() > 33 && drv_filename.as_bytes()[32] == b'-' {
+        &drv_filename[33..]
+    } else {
+        return None;
+    };
+    // name_with_ext is like "susui-0.1.0.drv"
+    let drv_name = name_with_ext.trim_end_matches(".drv");
+    if drv_name.is_empty() {
+        return None;
+    }
+
+    // Search /nix/var/log/nix/drvs/ for matching log files
+    let log_base = std::path::Path::new("/nix/var/log/nix/drvs");
+    if !log_base.exists() {
+        return None;
+    }
+
+    let suffix = format!("-{}.drv.bz2", drv_name);
+    let current_hash = &drv_filename[..32];
+
+    let mut best_path: Option<(std::path::PathBuf, u64)> = None;
+
+    if let Ok(subdirs) = std::fs::read_dir(log_base) {
+        for subdir_entry in subdirs.flatten() {
+            if let Ok(files) = std::fs::read_dir(subdir_entry.path()) {
+                for file_entry in files.flatten() {
+                    let fname = file_entry.file_name();
+                    let fname_str = fname.to_string_lossy();
+                    if fname_str.ends_with(&suffix) {
+                        // Skip the current drv (already tried in strategy 2)
+                        let file_hash = &fname_str[..std::cmp::min(32, fname_str.len())];
+                        if file_hash == current_hash {
+                            continue;
+                        }
+                        if let Ok(meta) = file_entry.metadata() {
+                            let size = meta.len();
+                            // Prefer the largest log file (most build output = most useful)
+                            if size > 0 {
+                                if best_path.as_ref().map_or(true, |(_, s)| size > *s) {
+                                    best_path = Some((file_entry.path(), size));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let (log_file_path, _) = best_path?;
+
+    // Reconstruct the full /nix/store/ drv path from the log filename
+    let log_fname = log_file_path
+        .file_name()?
+        .to_string_lossy()
+        .trim_end_matches(".bz2")
+        .to_string();
+    let log_dir_name = log_file_path
+        .parent()?
+        .file_name()?
+        .to_string_lossy()
+        .to_string();
+    let old_drv_path = format!("/nix/store/{}{}", log_dir_name, log_fname);
+
+    // Fetch the log via nix log
+    let (ok, stdout, _stderr) = run_cmd_full(nix, &["log", &old_drv_path]);
+    if !ok || stdout.trim().is_empty() {
+        return None;
+    }
+
+    let lines = make_log_lines(&stdout);
+    if lines.is_empty() {
+        return None;
+    }
+
+    let old_hash = &log_fname[..std::cmp::min(8, log_fname.len())];
+
+    let mut result = vec![LogLine {
+        n: 1,
+        text: format!("─── build log (prior build: {}…) ───", old_hash),
+        level: "dim".to_string(),
+    }, LogLine {
+        n: 2,
+        text: format!("note: source has changed since this log was produced (drv hash differs)"),
+        level: "dim".to_string(),
+    }];
+
+    for (i, mut line) in lines.into_iter().enumerate() {
+        line.n = i + 3;
         result.push(line);
     }
 
