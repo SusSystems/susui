@@ -441,31 +441,41 @@ fn check_output_in_store(nix: &str, target: &str, _drv_path: &str) -> (Option<St
     let (ok, stdout, _) = run_cmd_full(nix, &["derivation", "show", target]);
     if ok {
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            let drvs = parsed
+            // Nix 2.33+: { "derivations": { "hash-name.drv": { ... } }, "version": 4 }
+            // Older nix: { "/nix/store/hash-name.drv": { ... } }
+            let drvs_map = parsed
                 .get("derivations")
                 .and_then(|d| d.as_object())
-                .or_else(|| parsed.as_object());
-            if let Some(drvs_map) = drvs {
-                for (_drv_key, drv) in drvs_map {
-                    if let Some(outputs) = drv.get("outputs").and_then(|o| o.as_object()) {
-                        // Check the "out" output first, then any other
-                        for out_name in &["out", "lib", "dev", "bin", "doc"] {
-                            if let Some(out_data) = outputs.get(*out_name) {
-                                let path = out_data
-                                    .as_object()
-                                    .and_then(|o| o.get("path"))
-                                    .and_then(|p| p.as_str())
-                                    .unwrap_or("");
-                                if !path.is_empty() {
-                                    // Check if this path actually exists
-                                    let exists = std::path::Path::new(path).exists();
-                                    if exists {
-                                        return (Some(path.to_string()), true);
-                                    }
-                                    // Return the path even if it doesn't exist — useful for display
-                                    return (Some(path.to_string()), false);
-                                }
+                .or_else(|| parsed.as_object())
+                .cloned()
+                .unwrap_or_default();
+
+            for (_drv_key, drv) in &drvs_map {
+                // Skip non-object entries (e.g. "version": 4)
+                if !drv.is_object() {
+                    continue;
+                }
+                if let Some(outputs) = drv.get("outputs").and_then(|o| o.as_object()) {
+                    // Check the "out" output first, then any other
+                    for out_name in &["out", "lib", "dev", "bin", "doc"] {
+                        if let Some(out_data) = outputs.get(*out_name) {
+                            let raw_path = out_data
+                                .as_object()
+                                .and_then(|o| o.get("path"))
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("");
+                            if raw_path.is_empty() {
+                                continue;
                             }
+                            // Nix 2.33+ may omit /nix/store/ prefix
+                            let full_path = if raw_path.starts_with("/nix/store/") {
+                                raw_path.to_string()
+                            } else {
+                                format!("/nix/store/{}", raw_path)
+                            };
+                            // Check if this path actually exists
+                            let exists = std::path::Path::new(&full_path).exists();
+                            return (Some(full_path), exists);
                         }
                     }
                 }
@@ -763,6 +773,14 @@ fn is_nix_noise(line: &str) -> bool {
     if l.starts_with("unpacking '") && l.contains("into the Git cache") {
         return true;
     }
+    // Nix structured log markers (internal JSON annotations)
+    if l.starts_with("@nix ") || l.starts_with("@nix\t") {
+        return true;
+    }
+    // `nix log` preamble
+    if l.starts_with("got build log for '") {
+        return true;
+    }
     false
 }
 
@@ -791,19 +809,61 @@ fn format_duration(d: std::time::Duration) -> String {
 
 fn classify_log_line(line: &str) -> String {
     let l = line.to_lowercase();
-    if l.contains("error") || l.contains("failed") || l.contains("fail:") {
-        "error".to_string()
-    } else if l.contains("warning") || l.contains("override-input") {
-        "warning".to_string()
-    } else if l.contains("success") || l.contains("built successfully") || l.starts_with("/nix/store/") {
-        "success".to_string()
-    } else if l.contains("evaluating") || l.contains("copying") || l.starts_with("building") {
-        "nix".to_string()
-    } else if l.starts_with("  ") || l.contains("...") {
-        "dim".to_string()
-    } else {
-        "info".to_string()
+    // Test results
+    if l.contains("test result:") {
+        if l.contains("0 failed") {
+            return "success".to_string();
+        } else {
+            return "error".to_string();
+        }
     }
+    if l.contains("... ok") || l.contains("... bench:") {
+        return "success".to_string();
+    }
+    if l.contains("... failed") || l.contains("... ignored") {
+        return "error".to_string();
+    }
+    if l.starts_with("running ") && l.contains("test") {
+        return "info".to_string();
+    }
+    // Phase headers
+    if l.starts_with("running phase:") || l.ends_with("phase") {
+        return "nix".to_string();
+    }
+    if l.contains("completed in") {
+        return "dim".to_string();
+    }
+    // Errors
+    if l.contains("error") || l.contains("failed") || l.contains("fail:") {
+        return "error".to_string();
+    }
+    // Warnings
+    if l.contains("warning") || l.contains("override-input") {
+        return "warning".to_string();
+    }
+    // Success
+    if l.contains("success") || l.contains("built successfully") || l.starts_with("/nix/store/") {
+        return "success".to_string();
+    }
+    // Cargo output
+    if l.trim_start().starts_with("compiling ") || l.trim_start().starts_with("downloading ") {
+        return "dim".to_string();
+    }
+    if l.trim_start().starts_with("finished ") {
+        return "success".to_string();
+    }
+    // Nix build phases
+    if l.contains("evaluating") || l.contains("copying") || l.starts_with("building") {
+        return "nix".to_string();
+    }
+    // Hook execution
+    if l.starts_with("executing ") || l.starts_with("finished ") {
+        return "dim".to_string();
+    }
+    if l.starts_with("  ") || l.contains("...") {
+        return "dim".to_string();
+    }
+    "info".to_string()
 }
 
 fn parse_flake_uri(uri: &str) -> (String, Option<String>, Option<String>, Option<String>) {

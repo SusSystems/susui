@@ -272,6 +272,128 @@ function LogLine({ number, content, level }) {
   `;
 }
 
+// ─── PHASE-AWARE BUILD LOG ─────────────────────────────────
+function BuildLog({ log, derivation }) {
+  // Parse log lines into nix build phases
+  const phases = useMemo(() => {
+    if (!log || log.length === 0) return [];
+    const result = [];
+    let current = { name: "preamble", lines: [], important: false };
+
+    for (const line of log) {
+      const t = line.text;
+      // Detect phase boundaries: "Running phase: fooPhase"
+      const phaseMatch = t.match(/^Running phase:\s*(\S+)/);
+      if (phaseMatch) {
+        if (current.lines.length > 0) result.push(current);
+        const phaseName = phaseMatch[1];
+        current = { name: phaseName, lines: [], important: phaseName === "checkPhase" };
+        // Don't add the "Running phase:" line itself — we use the header
+        continue;
+      }
+      // Skip @nix structured markers and "got build log" preamble
+      if (/^@nix\s/.test(t) || /^got build log for/.test(t)) continue;
+      // Skip the cached-log header line from our enrichment
+      if (/^─── cached build log/.test(t)) continue;
+      current.lines.push(line);
+    }
+    if (current.lines.length > 0) result.push(current);
+
+    // Trim empty preamble
+    if (result.length > 0 && result[0].name === "preamble" && result[0].lines.length === 0) {
+      result.shift();
+    }
+
+    return result;
+  }, [log]);
+
+  // If no phases detected (e.g. derivation metadata fallback), render flat
+  if (phases.length <= 1 && !phases.some(p => p.name !== "preamble")) {
+    return html`
+      <div style=${{ padding: "6px 0", maxHeight: 400, overflowY: "auto" }}>
+        ${log.map((line, i) => html`<${LogLine} key=${i} number=${line.n} content=${line.text} level=${line.level} />`)}
+      </div>
+    `;
+  }
+
+  const isCheck = derivation && derivation.startsWith("checks.");
+
+  // Auto-expand: checkPhase always; buildPhase only if NOT a checks.* derivation
+  // For checks: collapse buildPhase (the huge compilation), expand checkPhase
+  const initialOpen = {};
+  phases.forEach(p => {
+    if (p.name === "checkPhase") initialOpen[p.name] = true;
+    else if (p.name === "buildPhase") initialOpen[p.name] = !isCheck;
+    else if (p.name === "preamble") initialOpen[p.name] = false;
+    else initialOpen[p.name] = !isCheck; // for checks.*, collapse everything except checkPhase
+  });
+  const [open, setOpen] = useState(initialOpen);
+  const toggle = (name) => setOpen(prev => ({ ...prev, [name]: !prev[name] }));
+
+  const phaseLabel = (name) => {
+    const map = {
+      preamble: "preamble",
+      unpackPhase: "unpack",
+      patchPhase: "patch",
+      updateAutotoolsGnuConfigScriptsPhase: "autotools",
+      configurePhase: "configure",
+      buildPhase: "build",
+      checkPhase: "check / test",
+      installPhase: "install",
+      fixupPhase: "fixup",
+    };
+    return map[name] || name;
+  };
+
+  const phaseIcon = (name, lines) => {
+    if (name === "checkPhase") {
+      const hasFailure = lines.some(l => l.level === "error");
+      return hasFailure ? "✕" : "✓";
+    }
+    return "›";
+  };
+
+  const phaseColor = (name, lines) => {
+    if (name === "checkPhase") {
+      const hasFailure = lines.some(l => l.level === "error");
+      return hasFailure ? T.color.fail400 : T.color.pass400;
+    }
+    return T.color.textTertiary;
+  };
+
+  return html`
+    <div style=${{ maxHeight: 500, overflowY: "auto" }}>
+      ${phases.map(phase => html`
+        <div key=${phase.name}>
+          <div onClick=${() => toggle(phase.name)}
+            style=${{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer",
+              background: open[phase.name] ? T.color.surface2 + "60" : "transparent",
+              borderBottom: "1px solid " + T.color.borderSubtle + "60",
+              userSelect: "none" }}>
+            <span style=${{ fontFamily: T.font.mono, fontSize: 10, color: phaseColor(phase.name, phase.lines),
+              transform: open[phase.name] ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 150ms ease", display: "inline-block", width: 10 }}>
+              ${phaseIcon(phase.name, phase.lines)}
+            </span>
+            <span style=${{ fontFamily: T.font.mono, fontSize: 11, fontWeight: 600, color: phaseColor(phase.name, phase.lines),
+              letterSpacing: "0.02em" }}>
+              ${phaseLabel(phase.name)}
+            </span>
+            <span style=${{ fontFamily: T.font.mono, fontSize: 10, color: T.color.textTertiary, marginLeft: "auto" }}>
+              ${phase.lines.length} line${phase.lines.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          ${open[phase.name] && html`
+            <div style=${{ padding: "4px 0" }}>
+              ${phase.lines.map((line, i) => html`<${LogLine} key=${i} number=${line.n} content=${line.text} level=${line.level} />`)}
+            </div>
+          `}
+        </div>
+      `)}
+    </div>
+  `;
+}
+
 function FilterTab({ label, count, active, onClick, color }) {
   const [hov, setHov] = useState(false);
   return html`
@@ -445,9 +567,7 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped }) {
                 <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textTertiary }}>build log · ${build.derivation}</span>
                 <${StatusBadge} status=${build.status} size="sm" />
               </div>
-              <div style=${{ padding: "6px 0", maxHeight: 280, overflowY: "auto" }}>
-                ${build.log.map((line, i) => html`<${LogLine} key=${i} number=${line.n} content=${line.text} level=${line.level} />`)}
-              </div>
+              <${BuildLog} log=${build.log} derivation=${build.derivation} />
             </div>
           </${DataHint}>
         </div>
