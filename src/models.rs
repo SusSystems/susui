@@ -84,6 +84,12 @@ pub struct Build {
     /// Whether the output is present in the nix store (i.e. previously built)
     #[serde(default)]
     pub in_store: bool,
+    /// Whether this is a historical build (prior derivation, not from current flake eval)
+    #[serde(default)]
+    pub historical: bool,
+    /// Whether the git working tree was dirty when this build was evaluated
+    #[serde(default)]
+    pub dirty: bool,
 }
 
 /// Summary stats for the dashboard
@@ -98,6 +104,7 @@ pub struct BuildStats {
     pub unknown: usize,
     pub overridden: usize,
     pub in_store: usize,
+    pub historical: usize,
     pub success_rate: f64,
 }
 
@@ -112,8 +119,11 @@ impl BuildStats {
         let unknown = builds.iter().filter(|b| b.status == BuildStatus::Unknown).count();
         let overridden = builds.iter().filter(|b| !b.override_inputs.is_empty()).count();
         let in_store = builds.iter().filter(|b| b.in_store).count();
-        let success_rate = if all > 0 {
-            (passed as f64 / all as f64) * 100.0
+        let historical = builds.iter().filter(|b| b.historical).count();
+        let current_count = all - historical;
+        let current_passed = builds.iter().filter(|b| !b.historical && b.status == BuildStatus::Passed).count();
+        let success_rate = if current_count > 0 {
+            (current_passed as f64 / current_count as f64) * 100.0
         } else {
             0.0
         };
@@ -127,6 +137,7 @@ impl BuildStats {
             unknown,
             overridden,
             in_store,
+            historical,
             success_rate,
         }
     }

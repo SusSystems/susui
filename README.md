@@ -50,6 +50,7 @@ susui generate . --output _site
 ```
 
 This creates:
+
 - `_site/index.html` — full dashboard with embedded data
 - `_site/.nojekyll` — disables Jekyll processing
 - `_site/api/builds.json` — build data as JSON
@@ -76,15 +77,15 @@ Create a `susui.yaml` in your project root:
 # Input filters — control which builds are displayed
 filters:
   allow:
-    - inputs: ["src"]
+    - inputs: ['src']
       type: github
       owner: my-org
-    - inputs: ["src"]
+    - inputs: ['src']
       type: git
       host: github.ibm.com
       org: my-internal-org
   deny:
-    - inputs: ["src"]
+    - inputs: ['src']
       type: github
       owner: my-org
       repo: experiments
@@ -95,15 +96,15 @@ status_push:
     type: github
     owner: my-org
     repo: my-app
-    method: commit_status      # or "check_run"
-    context: "nix-build/local"
+    method: commit_status # or "check_run"
+    context: 'nix-build/local'
   - input: src
     type: git
     host: github.ibm.com
     org: my-org
     repo: my-service
     method: check_run
-    check_name: "Nix Build"
+    check_name: 'Nix Build'
 ```
 
 ### Filter Rules
@@ -118,10 +119,10 @@ Filters control which builds appear on the dashboard based on resolved flake inp
 
 Push build results to GitHub as commit statuses or check runs. Status is derived from nix store evaluation context — no builds are triggered by this command. Requires `GITHUB_TOKEN` environment variable with appropriate permissions:
 
-| Method | Required Permission |
-|--------|---------------------|
+| Method          | Required Permission                         |
+| --------------- | ------------------------------------------- |
 | `commit_status` | `repo:status` or **Commit statuses: Write** |
-| `check_run` | `checks:write` or **Checks: Write** |
+| `check_run`     | `checks:write` or **Checks: Write**         |
 
 ## Data Source Hints
 

@@ -3,6 +3,7 @@ mod config;
 mod dashboard;
 mod github;
 mod models;
+mod nixdb;
 
 use anyhow::Result;
 use axum::{

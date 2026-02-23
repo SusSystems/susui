@@ -117,6 +117,7 @@ body {
 .gh-link { color: ${T.color.saku300}; text-decoration: none; transition: color 120ms ease; }
 .gh-link:hover { color: ${T.color.saku200}; }
 .hint-anchor { position: relative; }
+.hint-anchor:hover { z-index: 1001; }
 .hint-anchor .hint-dot {
   position: absolute; top: -2px; right: -2px; width: 5px; height: 5px;
   border-radius: 50%; background: ${T.color.hint}; opacity: 0;
@@ -446,7 +447,7 @@ function OverridePill({ inputName, type, owner, repo, ref: gitRef, pr, flakeRef 
 }
 
 // ─── NIX BUILD ROW ──────────────────────────────────────────
-function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog }) {
+function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog, priorBuilds }) {
   const cfg = statusConfig[build.status] || statusConfig.pending;
   const hasOv = build.overrideInputs && build.overrideInputs.length > 0;
   const commitUrl = build.owner && build.repo && build.commit
@@ -486,8 +487,9 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog }) {
     { label: "Flake metadata", cmd: "nix flake metadata " + build.flakeRef + " --json", source: "nix" },
   ];
 
+  const isHistorical = build.historical;
   return html`
-    <div style=${{ marginBottom: 2 }}>
+    <div style=${{ marginBottom: 2, opacity: isHistorical && !isExpanded ? 0.65 : 1, transition: "opacity " + T.transition.base }}>
       <div onClick=${onToggle} style=${{ display: "grid", gridTemplateColumns: "36px 1fr auto", alignItems: "center", gap: 12, padding: "12px 16px", background: isExpanded ? T.color.surface1 : "transparent", border: "1px solid " + (isExpanded ? T.color.border : "transparent"), borderBottom: isExpanded ? "none" : "1px solid " + T.color.borderSubtle, borderRadius: isExpanded ? T.radius.lg + " " + T.radius.lg + " 0 0" : "0", cursor: "pointer", transition: "all " + T.transition.base }}
         onMouseEnter=${e => { if (!isExpanded) e.currentTarget.style.background = T.color.surface1 + "80"; }}
         onMouseLeave=${e => { if (!isExpanded) e.currentTarget.style.background = "transparent"; }}>
@@ -502,10 +504,12 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog }) {
               <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.sm, fontWeight: 600, color: T.color.textPrimary }}>${build.derivation}</span>
             </${DataHint}>
             <${StatusBadge} status=${build.status} size="sm" />
+            ${build.historical && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.hint + "12", color: T.color.hint, border: "1px solid " + T.color.hint + "20", letterSpacing: "0.04em" }}>◷ HISTORICAL</span>`}
             ${build.inStore && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output exists in the local nix store."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pass400 + "12", color: T.color.pass400, border: "1px solid " + T.color.pass400 + "20", letterSpacing: "0.04em" }}>● IN STORE</span></${DataHint}>`}
             ${!build.inStore && build.status !== "failed" && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output not in local store. Run the build command to produce it."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.textTertiary + "12", color: T.color.textTertiary, border: "1px solid " + T.color.textTertiary + "20", letterSpacing: "0.04em" }}>◌ NOT BUILT</span></${DataHint}>`}
             ${hasOv && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pending400 + "15", color: T.color.pending400, border: "1px solid " + T.color.pending400 + "20", letterSpacing: "0.04em" }}>⚑ ${build.overrideInputs.length} OVERRIDE${build.overrideInputs.length > 1 ? "S" : ""}</span>`}
             ${build.pr && html`<a href=${"https://github.com/" + build.owner + "/" + build.repo + "/pull/" + build.pr} target="_blank" rel="noopener" class="gh-link" style=${{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: T.font.mono, fontSize: 10, color: T.color.running400, padding: "2px 6px", background: T.color.running400 + "12", borderRadius: T.radius.xs, border: "1px solid " + T.color.running400 + "20" }} onClick=${e => e.stopPropagation()}>PR #${build.pr}</a>`}
+            ${!build.historical && priorBuilds && priorBuilds.length > 0 && html`<span style=${{ fontSize: 9, fontWeight: 500, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.hint + "10", color: T.color.hint, border: "1px solid " + T.color.hint + "18", letterSpacing: "0.03em" }}>◷ ${priorBuilds.length} prior${priorBuilds.every(p => p.status === "passed") ? " ✓" : ""}</span>`}
           </div>
           <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, color: T.color.textTertiary, flexWrap: "wrap" }}>
             ${!grouped && html`<${DataHint} commands=${branchHint} position="below"><span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs }}>⎇ ${build.branch || "main"}</span></${DataHint}>`}
@@ -589,33 +593,123 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog }) {
   `;
 }
 
+// ─── DRV GROUP (shared-derivation card) ────────────────────
+function DrvGroup({ group, expandedBuild, onToggle, onFullLog, historicalByDerivation }) {
+  const { primary, aliases } = group;
+  const [expandedAlias, setExpandedAlias] = useState(null);
+
+  return html`
+    <div style=${{ border: "1px solid " + T.color.border, borderRadius: T.radius.lg, margin: "4px 0", overflow: "hidden" }}>
+      <${NixBuildRow} build=${primary} isExpanded=${expandedBuild === primary.id}
+        onToggle=${() => onToggle(primary.id)} grouped=${true} onFullLog=${onFullLog}
+        priorBuilds=${!primary.historical && historicalByDerivation ? historicalByDerivation[primary.derivation] : null} />
+      ${aliases.map((alias, i) => {
+        const isLast = i === aliases.length - 1;
+        const connector = isLast ? "└" : "├";
+        const cfg = statusConfig[alias.status] || statusConfig.pending;
+        const isAliasExpanded = expandedAlias === alias.id || expandedBuild === alias.id;
+        const flakeTarget = alias.flakeRef + "#" + alias.derivation;
+
+        return html`
+          <div key=${alias.id}>
+            <div onClick=${() => { if (isAliasExpanded) { setExpandedAlias(null); } else { setExpandedAlias(alias.id); } }}
+              style=${{ display: "flex", alignItems: "center", gap: 8, padding: "6px 16px 6px 48px", cursor: "pointer",
+                background: isAliasExpanded ? T.color.surface1 : "transparent",
+                borderTop: "1px solid " + T.color.borderSubtle,
+                transition: "background " + T.transition.fast }}
+              onMouseEnter=${e => { if (!isAliasExpanded) e.currentTarget.style.background = T.color.surface1 + "60"; }}
+              onMouseLeave=${e => { if (!isAliasExpanded) e.currentTarget.style.background = isAliasExpanded ? T.color.surface1 : "transparent"; }}>
+              <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.sm, color: T.color.textTertiary, userSelect: "none", flexShrink: 0, width: 12 }}>${connector}</span>
+              <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, fontWeight: 500, color: T.color.textSecondary, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>${alias.derivation}</span>
+              <${StatusBadge} status=${alias.status} size="sm" />
+              ${alias.inStore && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pass400 + "12", color: T.color.pass400, border: "1px solid " + T.color.pass400 + "20", letterSpacing: "0.04em" }}>● IN STORE</span>`}
+              ${!alias.inStore && alias.status !== "failed" && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.textTertiary + "12", color: T.color.textTertiary, border: "1px solid " + T.color.textTertiary + "20", letterSpacing: "0.04em" }}>◌ NOT BUILT</span>`}
+              <div style=${{ marginLeft: "auto", fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textTertiary, flexShrink: 0 }}>${alias.duration}</div>
+            </div>
+            ${isAliasExpanded && html`
+              <div style=${{ background: T.color.surface1, borderTop: "1px solid " + T.color.borderSubtle, padding: "0 16px 16px 48px", animation: "fadeIn 200ms ease" }}>
+                ${(alias.drvPath || alias.storePath) && html`
+                  <div style=${{ padding: "12px 0", borderBottom: "1px solid " + T.color.borderSubtle, marginBottom: 12 }}>
+                    <div style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Store Paths</div>
+                    ${alias.drvPath && html`<div style=${{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, width: 32 }}>drv</span>
+                      <span style=${{ fontFamily: T.font.mono, fontSize: 11, color: T.color.textSecondary, padding: "2px 8px", background: T.color.surface2, borderRadius: T.radius.xs, wordBreak: "break-all" }}>${alias.drvPath}</span>
+                    </div>`}
+                    ${alias.storePath && html`<div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary, width: 32 }}>out</span>
+                      <span style=${{ fontFamily: T.font.mono, fontSize: 11, color: alias.inStore ? T.color.pass400 : T.color.textTertiary, padding: "2px 8px", background: T.color.surface2, borderRadius: T.radius.xs, wordBreak: "break-all" }}>${alias.storePath}</span>
+                      <span style=${{ fontSize: 9, fontFamily: T.font.mono, color: alias.inStore ? T.color.pass400 : T.color.textTertiary }}>${alias.inStore ? "● exists" : "◌ missing"}</span>
+                    </div>`}
+                  </div>
+                `}
+                <div style=${{ padding: "10px 12px", background: T.color.surface0, borderRadius: T.radius.sm, border: "1px solid " + T.color.borderSubtle, marginBottom: 12, overflowX: "auto" }}>
+                  <div style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textSecondary, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                    <span style=${{ color: T.color.textTertiary }}>$ </span>
+                    <span style=${{ color: T.color.pass400 }}>nix build</span>
+                    <span> ${alias.flakeRef}#${alias.derivation}</span>
+                  </div>
+                </div>
+                ${alias.log && alias.log.length > 0 && html`
+                  <div style=${{ background: T.color.surface0, borderRadius: T.radius.sm, border: "1px solid " + T.color.borderSubtle, overflow: "hidden" }}>
+                    <div style=${{ padding: "8px 12px", borderBottom: "1px solid " + T.color.borderSubtle, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, color: T.color.textTertiary }}>build log · ${alias.derivation}</span>
+                      <${StatusBadge} status=${alias.status} size="sm" />
+                    </div>
+                    <${BuildLog} log=${alias.log} derivation=${alias.derivation} />
+                  </div>
+                `}
+              </div>
+            `}
+          </div>
+        `;
+      })}
+    </div>
+  `;
+}
+
 // ─── COMMIT GROUP ──────────────────────────────────────────
-function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle, onFullLog }) {
+function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle, onFullLog, historicalByDerivation }) {
+  const isHistorical = branch === "historical";
+  const isDirty = builds.some(b => b.dirty);
   const shortSha = commit ? commit.slice(0, 7) : "—";
-  const commitUrl = owner && repo && commit
+  const commitUrl = !isHistorical && !isDirty && owner && repo && commit
     ? "https://github.com/" + owner + "/" + repo + "/commit/" + commit : null;
   const passedCnt = builds.filter(b => b.status === "passed").length;
   const failedCnt = builds.filter(b => b.status === "failed").length;
   const inStoreCnt = builds.filter(b => b.inStore).length;
   const allPassed = failedCnt === 0 && builds.every(b => b.status === "passed" || b.status === "skipped");
-  const groupColor = failedCnt > 0 ? T.color.fail400 : allPassed ? T.color.pass400 : T.color.textTertiary;
+  const groupColor = isHistorical ? T.color.hint : failedCnt > 0 ? T.color.fail400 : allPassed ? T.color.pass400 : T.color.textTertiary;
 
-  const commitHintCmds = [
-    { label: "Commit details", cmd: "git log -1 --format='%H%n%s%n%an%n%ai' " + shortSha, source: "git" },
-    { label: "Flake metadata", cmd: "nix flake metadata " + (flakeRef || ".") + " --json", source: "nix" },
-  ];
+  const commitHintCmds = isHistorical
+    ? [{ label: "Inspect historical derivation", cmd: "nix-store -q --outputs " + (builds[0] && builds[0].drvPath || "<drv-path>"), source: "nix" }]
+    : [
+        { label: "Commit details", cmd: "git log -1 --format='%H%n%s%n%an%n%ai' " + shortSha, source: "git" },
+        ...(isDirty ? [{ label: "Show dirty changes", cmd: "git diff --stat", source: "git" }] : []),
+        { label: "Flake metadata", cmd: "nix flake metadata " + (flakeRef || ".") + " --json", source: "nix" },
+      ];
 
   return html`
-    <div style=${{ marginBottom: 4 }}>
+    <div style=${{ marginBottom: 4, borderLeft: isHistorical ? "none" : "2px solid " + (isDirty ? T.color.pending400 : T.color.saku400) + "50" }}>
       <div style=${{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px 6px", borderBottom: "1px solid " + T.color.borderSubtle }}>
         <div style=${{ width: 4, height: 4, borderRadius: "50%", background: groupColor, flexShrink: 0 }} />
         <${DataHint} commands=${commitHintCmds} position="below">
           <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, flexWrap: "wrap" }}>
-            <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs, color: T.color.textSecondary }}>⎇ ${branch || "main"}</span>
-            ${commitUrl
-              ? html`<a href=${commitUrl} target="_blank" rel="noopener" class="gh-link" style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, display: "inline-flex", alignItems: "center", gap: 4 }}><${GHIcon} size=${10} /> ${shortSha}</a>`
-              : html`<span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${shortSha}</span>`
-            }
+            ${isHistorical ? html`
+              <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.hint + "15", borderRadius: T.radius.xs, color: T.color.hint, border: "1px solid " + T.color.hint + "25" }}>◷ prior build</span>
+              <span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${commit}</span>
+            ` : html`
+              <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs, color: T.color.textSecondary }}>⎇ ${branch || "main"}</span>
+              ${isDirty ? html`
+                <span style=${{ fontSize: 9, fontWeight: 700, fontFamily: T.font.mono, padding: "1px 5px", borderRadius: T.radius.xs, background: T.color.pending400 + "18", color: T.color.pending400, border: "1px solid " + T.color.pending400 + "25", letterSpacing: "0.04em" }}>DIRTY</span>
+                <span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${shortSha}*</span>
+              ` : html`
+                <span style=${{ fontSize: 9, fontWeight: 700, fontFamily: T.font.mono, padding: "1px 5px", borderRadius: T.radius.xs, background: T.color.saku400 + "18", color: T.color.saku300, border: "1px solid " + T.color.saku400 + "25", letterSpacing: "0.04em" }}>HEAD</span>
+                ${commitUrl
+                  ? html`<a href=${commitUrl} target="_blank" rel="noopener" class="gh-link" style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, display: "inline-flex", alignItems: "center", gap: 4 }}><${GHIcon} size=${10} /> ${shortSha}</a>`
+                  : html`<span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${shortSha}</span>`
+                }
+              `}
+            `}
             <span style=${{ color: T.color.textTertiary }}>·</span>
             <span style=${{ color: T.color.textTertiary, fontSize: T.fontSize.xs }}>${flakeRef}</span>
             <span style=${{ color: T.color.textTertiary }}>·</span>
@@ -626,10 +720,25 @@ function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBu
           </div>
         </${DataHint}>
       </div>
-      ${builds.map(build => html`
-        <${NixBuildRow} key=${build.id} build=${build} isExpanded=${expandedBuild === build.id}
-          onToggle=${() => onToggle(build.id)} grouped=${true} onFullLog=${onFullLog} />
-      `)}
+      ${(() => {
+        const drvGroups = [];
+        const seen = new Map();
+        for (const b of builds) {
+          const key = b.drvPath || ("__solo_" + b.id);
+          if (!seen.has(key)) {
+            seen.set(key, { primary: b, aliases: [] });
+            drvGroups.push(seen.get(key));
+          } else {
+            seen.get(key).aliases.push(b);
+          }
+        }
+        return drvGroups.map(g => g.aliases.length > 0
+          ? html`<${DrvGroup} key=${g.primary.id} group=${g} expandedBuild=${expandedBuild} onToggle=${onToggle} onFullLog=${onFullLog} historicalByDerivation=${historicalByDerivation} />`
+          : html`<${NixBuildRow} key=${g.primary.id} build=${g.primary} isExpanded=${expandedBuild === g.primary.id}
+              onToggle=${() => onToggle(g.primary.id)} grouped=${true} onFullLog=${onFullLog}
+              priorBuilds=${!g.primary.historical && historicalByDerivation ? historicalByDerivation[g.primary.derivation] : null} />`
+        );
+      })()}
     </div>
   `;
 }
@@ -711,6 +820,7 @@ function App() {
   const [builds, setBuilds] = useState(BUILDS_DATA);
   const [meta, setMeta] = useState(META_DATA);
   const [fullLogBuildId, setFullLogBuildId] = useState(null);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
 
   // Hash-based routing for full log view
   useEffect(() => {
@@ -765,7 +875,15 @@ function App() {
 
   const filtered = useMemo(() => {
     let r = builds;
-    if (filter !== "all") r = r.filter(b => b.status === filter);
+    if (filter === "historical") {
+      r = r.filter(b => b.historical);
+    } else if (filter === "all") {
+      // Show all builds: current + historical
+    } else {
+      // Status filters apply to current builds only
+      r = r.filter(b => !b.historical);
+      r = r.filter(b => b.status === filter);
+    }
     if (search) {
       const s = search.toLowerCase();
       r = r.filter(b =>
@@ -779,22 +897,25 @@ function App() {
     return r;
   }, [filter, search, builds]);
 
+  const currentBuilds = builds.filter(b => !b.historical);
   const cnt = {
     all: builds.length,
-    passed: builds.filter(b => b.status === "passed").length,
-    failed: builds.filter(b => b.status === "failed").length,
-    running: builds.filter(b => b.status === "running").length,
-    pending: builds.filter(b => b.status === "pending").length,
-    unknown: builds.filter(b => b.status === "unknown").length,
+    passed: currentBuilds.filter(b => b.status === "passed").length,
+    failed: currentBuilds.filter(b => b.status === "failed").length,
+    running: currentBuilds.filter(b => b.status === "running").length,
+    pending: currentBuilds.filter(b => b.status === "pending").length,
+    unknown: currentBuilds.filter(b => b.status === "unknown").length,
+    historical: builds.filter(b => b.historical).length,
   };
-  const overrideCnt = builds.filter(b => b.overrideInputs && b.overrideInputs.length > 0).length;
-  const inStoreCnt = builds.filter(b => b.inStore).length;
+  const overrideCnt = currentBuilds.filter(b => b.overrideInputs && b.overrideInputs.length > 0).length;
+  const inStoreCnt = currentBuilds.filter(b => b.inStore).length;
 
   // Group filtered builds by commit hash
   const grouped = useMemo(() => {
     const groups = [];
     const seen = new Map();
-    for (const b of filtered) {
+    const ordered = [...filtered].sort((a, b) => (a.historical === b.historical) ? 0 : a.historical ? 1 : -1);
+    for (const b of ordered) {
       const key = b.commit + "|" + (b.branch || "") + "|" + b.flakeRef;
       if (!seen.has(key)) {
         const group = { commit: b.commit, branch: b.branch, owner: b.owner, repo: b.repo, flakeRef: b.flakeRef, builds: [] };
@@ -805,6 +926,17 @@ function App() {
     }
     return groups;
   }, [filtered]);
+
+  const currentGroups = useMemo(() => grouped.filter(g => g.branch !== "historical"), [grouped]);
+  const historicalGroups = useMemo(() => grouped.filter(g => g.branch === "historical"), [grouped]);
+  const historicalByDerivation = useMemo(() => {
+    const map = {};
+    builds.filter(b => b.historical).forEach(b => {
+      if (!map[b.derivation]) map[b.derivation] = [];
+      map[b.derivation].push(b);
+    });
+    return map;
+  }, [builds]);
 
   const successRateHint = [
     { label: "Aggregate from build results", cmd: "susui scan . --json | jq '.stats.success_rate'", source: "shell" },
@@ -834,7 +966,7 @@ function App() {
         </div>
         <div style=${{ margin: "0 8px 24px", padding: "6px 10px", background: T.color.surface2, borderRadius: T.radius.sm, fontSize: T.fontSize.xs, fontFamily: T.font.mono, color: T.color.textTertiary, display: "flex", alignItems: "center", gap: 6 }}>
           <span style=${{ width: 6, height: 6, borderRadius: "50%", background: cnt.running > 0 ? T.color.running400 : T.color.pass400, animation: cnt.running > 0 ? "pulse 1.5s infinite" : "none" }} />
-          ${cnt.running > 0 ? cnt.running + " building" : "idle"} · ${cnt.all} total
+          ${cnt.running > 0 ? cnt.running + " building" : "idle"} · ${cnt.all} current${cnt.historical > 0 ? " · " + cnt.historical + " prior" : ""}
         </div>
         <div style=${{ display: "flex", flexDirection: "column", gap: 2 }}>
           ${navItems.map(item => html`
@@ -868,8 +1000,8 @@ function App() {
             All flake builds, derivations, override inputs, and evaluation logs. Hover any element for data source commands. This dashboard is read-only — it inspects nix store results but does not trigger builds.
           </p>
         </div>
-        <div class="animate-in stagger-1" style=${{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap" }}>
-          <${MetricCard} label="Success Rate" value=${cnt.all > 0 ? Math.round(cnt.passed / cnt.all * 100) : 0} suffix="%"
+        <div class="animate-in stagger-1" style=${{ display: "flex", gap: 12, marginBottom: 32, flexWrap: "wrap", position: "relative", zIndex: 10 }}>
+          <${MetricCard} label="Success Rate" value=${currentBuilds.length > 0 ? Math.round(cnt.passed / currentBuilds.length * 100) : 0} suffix="%"
             color=${T.color.pass400} hintCommands=${successRateHint} hintNotes="Calculated as passed / total builds." />
           <${MetricCard} label="In Store" value=${inStoreCnt} suffix=${"/" + cnt.all}
             sub=${inStoreCnt === cnt.all ? "all built" : (cnt.all - inStoreCnt) + " not yet built"}
@@ -891,6 +1023,7 @@ function App() {
             <${FilterTab} label="Not Built" count=${cnt.unknown} active=${filter === "unknown"} onClick=${() => setFilter("unknown")} color=${T.color.textTertiary} />
             <${FilterTab} label="Running" count=${cnt.running} active=${filter === "running"} onClick=${() => setFilter("running")} color=${T.color.running400} />
             <${FilterTab} label="Pending" count=${cnt.pending} active=${filter === "pending"} onClick=${() => setFilter("pending")} color=${T.color.pending400} />
+            <${FilterTab} label="Historical" count=${cnt.historical} active=${filter === "historical"} onClick=${() => setFilter("historical")} color=${T.color.hint} />
           </div>
           <div style=${{ width: 260 }}>
             <${SearchInput} placeholder="Search builds, inputs..." value=${search} onChange=${e => setSearch(e.target.value)} />
@@ -900,14 +1033,23 @@ function App() {
           ${filtered.length === 0 && html`
             <div style=${{ padding: 40, textAlign: "center", color: T.color.textTertiary, fontSize: T.fontSize.sm }}>No builds match the current filter.</div>
           `}
-          ${grouped.length === 1
-            ? grouped[0].builds.length === 1
-              ? html`<${NixBuildRow} key=${grouped[0].builds[0].id} build=${grouped[0].builds[0]} isExpanded=${expandedBuild === grouped[0].builds[0].id} onToggle=${() => setExpandedBuild(expandedBuild === grouped[0].builds[0].id ? null : grouped[0].builds[0].id)} onFullLog=${openFullLog} />`
-              : html`<${CommitGroup} key=${grouped[0].commit} ...${grouped[0]} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} />`
-            : grouped.map(g => html`
-              <${CommitGroup} key=${g.commit} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} />
-            `)
-          }
+          ${currentGroups.map(g => html`
+            <${CommitGroup} key=${g.commit + "|c"} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} historicalByDerivation=${historicalByDerivation} />
+          `)}
+          ${filter === "all" && historicalGroups.length > 0 && currentGroups.length > 0 && html`
+            <div onClick=${() => setHistoryExpanded(p => !p)}
+              style=${{ padding: "14px 16px 6px", display: "flex", alignItems: "center", gap: 8, marginTop: 4, cursor: "pointer", userSelect: "none" }}
+              onMouseEnter=${e => e.currentTarget.style.background = T.color.surface1 + "60"}
+              onMouseLeave=${e => e.currentTarget.style.background = "transparent"}>
+              <span style=${{ fontFamily: T.font.mono, fontSize: 10, color: T.color.hint, transform: historyExpanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms ease", display: "inline-block" }}>›</span>
+              <span style=${{ fontSize: 10, fontFamily: T.font.mono, fontWeight: 600, color: T.color.hint, letterSpacing: "0.06em", textTransform: "uppercase" }}>Build History</span>
+              <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary }}>${cnt.historical} prior build${cnt.historical !== 1 ? "s" : ""} in store</span>
+              <div style=${{ flex: 1, height: 1, background: T.color.border }} />
+            </div>
+          `}
+          ${(filter !== "all" || historyExpanded) && historicalGroups.map(g => html`
+            <${CommitGroup} key=${g.commit + "|h"} ...${g} expandedBuild=${expandedBuild} onToggle=${id => setExpandedBuild(expandedBuild === id ? null : id)} onFullLog=${openFullLog} historicalByDerivation=${historicalByDerivation} />
+          `)}
         </div>
         <div style=${{ marginTop: 40, paddingTop: 24, borderTop: "1px solid " + T.color.border, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style=${{ fontSize: T.fontSize.xs, color: T.color.textTertiary }}>sus ui · nix build dashboard</div>
