@@ -505,15 +505,18 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     // Check if the output path exists in the store
     let (store_path, in_store) = check_output_in_store(&nix, &target, &drv_path);
 
-    // Determine status from store presence
+    // Retrieve logs with multiple strategies
+    let (log_lines, has_build_log) = enrich_eval_logs(&nix, &target, &drv_path, store_path.as_deref());
+
+    // Determine status: passed if output is in store, failed if a build log
+    // exists (meaning the build was attempted and failed), unknown otherwise.
     let status = if in_store {
         BuildStatus::Passed
+    } else if has_build_log {
+        BuildStatus::Failed
     } else {
         BuildStatus::Unknown
     };
-
-    // Retrieve logs with multiple strategies
-    let log_lines = enrich_eval_logs(&nix, &target, &drv_path, store_path.as_deref());
 
     Build {
         id,
@@ -605,12 +608,14 @@ fn check_output_in_store(nix: &str, target: &str, _drv_path: &str) -> (Option<St
 ///   1. `nix log <target>` — flake ref based log lookup
 ///   2. `nix log <drv>` — derivation path based lookup
 ///   3. `nix log <output_path>` — output path based lookup
-///   4. `nix derivation show` — structured recipe as fallback
-fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<&str>) -> Vec<LogLine> {
+///   4. Direct filesystem lookup in /nix/var/log/nix/drvs/
+///   5. Historical log search by derivation name
+///   6. `cargo test` fallback for Rust check derivations
+fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<&str>) -> (Vec<LogLine>, bool) {
     // Strategy 1: try `nix log` with the flake target ref
     if let Some(log_lines) = try_cached_log(nix, target, "flake target") {
         if !log_lines.is_empty() {
-            return log_lines;
+            return (log_lines, true);
         }
     }
 
@@ -618,7 +623,7 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
     if drv_path.starts_with("/nix/store/") {
         if let Some(log_lines) = try_cached_log(nix, drv_path, "derivation") {
             if !log_lines.is_empty() {
-                return log_lines;
+                return (log_lines, true);
             }
         }
     }
@@ -627,12 +632,21 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
     if let Some(out_path) = store_path {
         if let Some(log_lines) = try_cached_log(nix, out_path, "output path") {
             if !log_lines.is_empty() {
-                return log_lines;
+                return (log_lines, true);
             }
         }
     }
 
-    // Strategy 4: search for a previous build log by derivation name.
+    // Strategy 4: direct filesystem lookup in /nix/var/log/nix/drvs/.
+    // `nix log` can fail to resolve even when the log file physically exists,
+    // so look for it directly by constructing the path from the drv hash.
+    if let Some(log_lines) = try_direct_log_file(drv_path) {
+        if !log_lines.is_empty() {
+            return (log_lines, true);
+        }
+    }
+
+    // Strategy 5: search for a previous build log by derivation name.
     // When the source changes, the drv hash changes but the derivation name
     // (e.g. "susui-0.1.0") stays the same. Look in the nix log cache for any
     // prior build of the same derivation name.
@@ -651,11 +665,11 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
                 line.n = separator_n + 1 + i;
                 combined.push(line);
             }
-            return combined;
+            return (combined, false);
         }
     }
 
-    // Strategy 5: for check derivations of Rust projects, try `cargo test`
+    // Strategy 6: for check derivations of Rust projects, try `cargo test`
     // to show the actual test output even when no nix log is cached.
     if target.contains("#checks.") {
         if let Some(log_lines) = try_cargo_test_fallback(target) {
@@ -672,13 +686,13 @@ fn enrich_eval_logs(nix: &str, target: &str, drv_path: &str, store_path: Option<
                     line.n = sep_n + 1 + i;
                     combined.push(line);
                 }
-                return combined;
+                return (combined, false);
             }
         }
     }
 
     // Fall back to derivation metadata only
-    derivation_info_lines(nix, target, drv_path)
+    (derivation_info_lines(nix, target, drv_path), false)
 }
 
 /// Try to fetch a cached build log via `nix log`.
@@ -704,6 +718,56 @@ fn try_cached_log(nix: &str, log_ref: &str, source_label: &str) -> Option<Vec<Lo
     let mut result = vec![LogLine {
         n: 1,
         text: format!("─── cached build log ({}: {}) ───", source_label, short_ref),
+        level: "dim".to_string(),
+    }];
+
+    for (i, mut line) in lines.into_iter().enumerate() {
+        line.n = i + 2;
+        result.push(line);
+    }
+
+    Some(result)
+}
+
+/// Direct filesystem lookup for a build log in /nix/var/log/nix/drvs/.
+///
+/// `nix log` can fail to resolve even when the compressed log file physically
+/// exists on disk. This bypasses `nix log` entirely and reads the bz2 file
+/// directly using `bzcat`.
+fn try_direct_log_file(drv_path: &str) -> Option<Vec<LogLine>> {
+    let drv_basename = drv_path.split('/').next_back()?;
+    if drv_basename.len() < 3 {
+        return None;
+    }
+
+    let prefix = &drv_basename[..2];
+    let rest = &drv_basename[2..];
+    let log_file = format!("/nix/var/log/nix/drvs/{}/{}.bz2", prefix, rest);
+    let log_path = std::path::Path::new(&log_file);
+
+    if !log_path.exists() {
+        return None;
+    }
+
+    let (ok, stdout, _stderr) = run_cmd_full("bzcat", &[&log_file]);
+    if !ok || stdout.trim().is_empty() {
+        return None;
+    }
+
+    let lines = make_log_lines(&stdout);
+    if lines.is_empty() {
+        return None;
+    }
+
+    let short_drv = if drv_basename.len() > 40 {
+        &drv_basename[..40]
+    } else {
+        drv_basename
+    };
+
+    let mut result = vec![LogLine {
+        n: 1,
+        text: format!("─── cached build log (drv log: {}…) ───", short_drv),
         level: "dim".to_string(),
     }];
 
@@ -1213,23 +1277,46 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                 }
             }
 
-            let out_path = match found_output {
-                Some(p) => p,
-                None => continue, // Output not in store, skip
+            // Determine status and metadata based on whether the output exists
+            let (status, store_path, in_store, time_str) = if let Some(out_path) = found_output {
+                let time_str = std::fs::metadata(&out_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|mtime| {
+                        let elapsed = mtime.elapsed().unwrap_or_default();
+                        format_duration_ago(elapsed)
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                (BuildStatus::Passed, Some(out_path), true, time_str)
+            } else {
+                // No output — check if a build log exists (failed build)
+                let drv_basename = fname_str.as_ref();
+                let log_exists = if drv_basename.len() >= 3 {
+                    let prefix = &drv_basename[..2];
+                    let rest = &drv_basename[2..];
+                    let log_file = format!("/nix/var/log/nix/drvs/{}/{}.bz2", prefix, rest);
+                    std::path::Path::new(&log_file).exists()
+                } else {
+                    false
+                };
+                if !log_exists {
+                    continue; // No output and no log — truly unknown, skip
+                }
+                // Use the drv file's mtime as a rough timestamp
+                let time_str = std::fs::metadata(&old_drv_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|mtime| {
+                        let elapsed = mtime.elapsed().unwrap_or_default();
+                        format_duration_ago(elapsed)
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                (BuildStatus::Failed, None, false, time_str)
             };
-
-            // Get mtime of the output path for the "time" field
-            let time_str = std::fs::metadata(&out_path)
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .map(|mtime| {
-                    let elapsed = mtime.elapsed().unwrap_or_default();
-                    format_duration_ago(elapsed)
-                })
-                .unwrap_or_else(|| "unknown".to_string());
 
             // Retrieve build log
             let log_lines = try_cached_log(nix, &old_drv_path, "historical build")
+                .or_else(|| try_direct_log_file(&old_drv_path))
                 .unwrap_or_default();
 
             let short_hash = &file_hash[..std::cmp::min(7, file_hash.len())];
@@ -1239,7 +1326,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                 historical_builds.push(Build {
                     id: 0, // Will be reassigned later
                     derivation: derivation_attr.to_string(),
-                    status: BuildStatus::Passed,
+                    status: status.clone(),
                     duration: "—".to_string(),
                     time: time_str.clone(),
                     branch: Some("historical".to_string()),
@@ -1252,8 +1339,8 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                     override_inputs: vec![],
                     log: log_lines.clone(),
                     drv_path: Some(old_drv_path.clone()),
-                    store_path: Some(out_path.clone()),
-                    in_store: true,
+                    store_path: store_path.clone(),
+                    in_store,
                     historical: true,
                     dirty: false,
                 });
