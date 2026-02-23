@@ -68,6 +68,9 @@ pub struct Build {
     pub owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    /// The forge base URL (e.g. "https://github.com", "https://gitlab.com")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_url: Option<String>,
     pub flake_ref: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<u64>,

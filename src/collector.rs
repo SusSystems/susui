@@ -90,42 +90,127 @@ fn git_is_dirty(dir: &str) -> bool {
     ok && !stdout.trim().is_empty()
 }
 
-/// Get the git remote owner/repo
-fn git_remote_info(dir: &str) -> (Option<String>, Option<String>) {
+/// Given a commit hash, return which branch contains it.
+/// Prefers the current branch (via `git merge-base --is-ancestor`),
+/// falls back to `git branch --contains`.
+#[allow(dead_code)]
+fn git_branch_containing(dir: &str, commit: &str) -> Option<String> {
+    // Check if the current branch contains this commit
+    if let Some(current) = git_branch(dir) {
+        let (ok, _, _) = run_cmd_full("git", &["-C", dir, "merge-base", "--is-ancestor", commit, &current]);
+        if ok {
+            return Some(current);
+        }
+    }
+
+    // Fall back to git branch --contains
+    let (ok, stdout, _) = run_cmd_full("git", &["-C", dir, "branch", "--contains", commit]);
+    if !ok {
+        return None;
+    }
+    // Parse output: lines like "* main" or "  feature-branch"
+    stdout
+        .lines()
+        .map(|l| l.trim_start_matches('*').trim().to_string())
+        .find(|l| !l.is_empty())
+}
+
+/// Get the git remote forge URL, owner, and repo.
+///
+/// Returns `(forge_url, owner, repo)` where `forge_url` is like `"https://github.com"`.
+/// Supports any git host: GitHub, GitLab, Gitea, etc.
+///
+/// Parsed URL formats:
+/// - `https://HOST/owner/repo.git` → `https://HOST`
+/// - `git@HOST:owner/repo.git` → `https://HOST`
+/// - `ssh://git@HOST/owner/repo.git` → `https://HOST`
+/// - `github:owner/repo` → `https://github.com` (nix shorthand)
+fn git_remote_info(dir: &str) -> (Option<String>, Option<String>, Option<String>) {
     let url = match run_cmd("git", &["-C", dir, "remote", "get-url", "origin"]) {
         Ok(u) => u.trim().to_string(),
-        Err(_) => return (None, None),
+        Err(_) => return (None, None, None),
     };
 
-    // Strip authentication from URL: https://x-access-token:TOKEN@github.com/... → https://github.com/...
-    let cleaned = if let Some(at_pos) = url.find('@') {
-        if url.starts_with("https://") {
-            format!("https://{}", &url[at_pos + 1..])
+    // Nix shorthand: github:owner/repo
+    if let Some(rest) = url.strip_prefix("github:") {
+        let rest = rest.trim_end_matches(".git").trim_end_matches('/');
+        let parts: Vec<&str> = rest.splitn(2, '/').collect();
+        if parts.len() == 2 {
+            return (
+                Some("https://github.com".to_string()),
+                Some(parts[0].to_string()),
+                Some(parts[1].to_string()),
+            );
+        }
+        return (None, None, None);
+    }
+
+    // ssh://git@HOST/owner/repo.git
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        // rest = "git@HOST/owner/repo.git" or "git@HOST:port/owner/repo.git"
+        let after_at = rest.find('@').map(|i| &rest[i + 1..]).unwrap_or(rest);
+        // Split host from path at first '/'
+        if let Some(slash_pos) = after_at.find('/') {
+            let host = &after_at[..slash_pos];
+            // Remove port if present (e.g. "HOST:port")
+            let host_no_port = host.split(':').next().unwrap_or(host);
+            let path = after_at[slash_pos + 1..].trim_end_matches(".git").trim_end_matches('/');
+            let parts: Vec<&str> = path.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                return (
+                    Some(format!("https://{}", host_no_port)),
+                    Some(parts[0].to_string()),
+                    Some(parts[1].to_string()),
+                );
+            }
+        }
+        return (None, None, None);
+    }
+
+    // git@HOST:owner/repo.git
+    if url.starts_with("git@") {
+        let after_at = &url[4..];
+        if let Some(colon_pos) = after_at.find(':') {
+            let host = &after_at[..colon_pos];
+            let path = after_at[colon_pos + 1..].trim_end_matches(".git").trim_end_matches('/');
+            let parts: Vec<&str> = path.splitn(2, '/').collect();
+            if parts.len() == 2 {
+                return (
+                    Some(format!("https://{}", host)),
+                    Some(parts[0].to_string()),
+                    Some(parts[1].to_string()),
+                );
+            }
+        }
+        return (None, None, None);
+    }
+
+    // https://HOST/owner/repo.git (with optional auth token stripping)
+    if url.starts_with("https://") || url.starts_with("http://") {
+        let cleaned = if let Some(at_pos) = url.find('@') {
+            // Strip auth: https://x-access-token:TOKEN@HOST/... → https://HOST/...
+            let scheme_end = url.find("://").unwrap() + 3;
+            format!("{}{}", &url[..scheme_end], &url[at_pos + 1..])
         } else {
             url.clone()
+        };
+        // cleaned = "https://HOST/owner/repo.git"
+        let scheme_end = cleaned.find("://").unwrap() + 3;
+        let after_scheme = &cleaned[scheme_end..];
+        // Split: HOST / owner / repo.git
+        let segments: Vec<&str> = after_scheme.trim_end_matches(".git").trim_end_matches('/').splitn(3, '/').collect();
+        if segments.len() == 3 {
+            let host = segments[0];
+            return (
+                Some(format!("{}://{}", &cleaned[..cleaned.find("://").unwrap()], host)),
+                Some(segments[1].to_string()),
+                Some(segments[2].to_string()),
+            );
         }
-    } else {
-        url.clone()
-    };
-
-    // Parse github:owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo.git
-    let stripped = cleaned
-        .trim_start_matches("https://github.com/")
-        .trim_start_matches("git@github.com:")
-        .trim_start_matches("github:")
-        .trim_end_matches(".git")
-        .trim_end_matches('/')
-        .to_string();
-
-    let parts: Vec<&str> = stripped.splitn(2, '/').collect();
-    if parts.len() == 2 {
-        (
-            Some(parts[0].to_string()),
-            Some(parts[1].to_string()),
-        )
-    } else {
-        (None, None)
+        return (None, None, None);
     }
+
+    (None, None, None)
 }
 
 /// Parse nix flake metadata JSON
@@ -304,7 +389,7 @@ pub fn build_derivation(
 
     let branch = git_branch(&dir);
     let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
-    let (owner, repo) = git_remote_info(&dir);
+    let (forge_url, owner, repo) = git_remote_info(&dir);
     let dirty = git_is_dirty(&dir);
 
     let status = if success {
@@ -338,6 +423,7 @@ pub fn build_derivation(
         commit,
         owner,
         repo,
+        forge_url,
         flake_ref: flake_ref.to_string(),
         pr: None,
         override_inputs,
@@ -382,7 +468,7 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
 
     let branch = git_branch(&dir);
     let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
-    let (owner, repo) = git_remote_info(&dir);
+    let (forge_url, owner, repo) = git_remote_info(&dir);
     let dirty = git_is_dirty(&dir);
 
     // If we got a .drv path back, the evaluation succeeded even if
@@ -403,6 +489,7 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
             commit,
             owner,
             repo,
+            forge_url,
             flake_ref: flake_ref.to_string(),
             pr: None,
             override_inputs: vec![],
@@ -438,6 +525,7 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
         commit,
         owner,
         repo,
+        forge_url,
         flake_ref: flake_ref.to_string(),
         pr: None,
         override_inputs: vec![],
@@ -1158,6 +1246,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                     commit: format!("{}…{}", short_hash, drv_name),
                     owner: None,
                     repo: None,
+                    forge_url: None,
                     flake_ref: flake_ref.to_string(),
                     pr: None,
                     override_inputs: vec![],
@@ -1178,6 +1267,162 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
     historical_builds.sort_by(|a, b| a.commit.cmp(&b.commit));
 
     historical_builds
+}
+
+/// Resolve historical builds to their real git commits by matching derivation hashes.
+///
+/// For each commit in git history, evaluates `nix path-info --derivation` to get
+/// the exact `.drv` path, then compares against historical builds' drv hashes.
+/// When matched, updates the historical build with the real git commit, forge URL,
+/// owner, and repo.
+fn resolve_historical_commits(nix: &str, builds: &mut [Build]) {
+    use std::collections::{HashMap, HashSet};
+
+    // Collect historical builds' drv hashes → build indices
+    let mut drv_hash_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut historical_attrs: HashSet<String> = HashSet::new();
+
+    for (i, build) in builds.iter().enumerate() {
+        if !build.historical {
+            continue;
+        }
+        let drv_path = match &build.drv_path {
+            Some(p) => p,
+            None => continue,
+        };
+        let drv_filename = drv_path.split('/').next_back().unwrap_or("");
+        if drv_filename.len() <= 33 || drv_filename.as_bytes()[32] != b'-' {
+            continue;
+        }
+        let hash = &drv_filename[..32];
+        drv_hash_to_indices
+            .entry(hash.to_string())
+            .or_default()
+            .push(i);
+        historical_attrs.insert(build.derivation.clone());
+    }
+
+    if drv_hash_to_indices.is_empty() {
+        return;
+    }
+
+    // Determine git directory from the first build's flake_ref
+    let dir = builds
+        .iter()
+        .find(|b| !b.historical)
+        .map(|b| {
+            if b.flake_ref.starts_with('.') || b.flake_ref.starts_with('/') {
+                b.flake_ref.clone()
+            } else {
+                ".".to_string()
+            }
+        })
+        .unwrap_or_else(|| ".".to_string());
+
+    // Verify it's a git repo
+    if git_commit(&dir).is_none() {
+        return;
+    }
+
+    let (forge_url, owner, repo) = git_remote_info(&dir);
+
+    // Get unique attribute paths from historical builds
+    let attrs: Vec<String> = historical_attrs.into_iter().collect();
+
+    // Get recent commits
+    let (ok, stdout, _) = run_cmd_full("git", &["-C", &dir, "log", "--format=%H", "-200"]);
+    if !ok {
+        return;
+    }
+    let commits: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+
+    // Track which attributes still have unresolved historical builds
+    let mut unresolved_attrs: HashSet<String> = attrs.iter().cloned().collect();
+    let mut unresolved_hashes: HashSet<String> = drv_hash_to_indices.keys().cloned().collect();
+
+    // Track which (attr) has been fully resolved
+    let mut attr_resolved_count: HashMap<String, usize> = HashMap::new();
+    let mut attr_total_count: HashMap<String, usize> = HashMap::new();
+
+    for (hash, indices) in &drv_hash_to_indices {
+        for &idx in indices {
+            let attr = &builds[idx].derivation;
+            *attr_total_count.entry(attr.clone()).or_default() += 1;
+            // Don't initialize resolved count — starts at 0
+            let _ = hash; // suppress unused warning
+        }
+    }
+
+    tracing::info!(
+        historical_drvs = drv_hash_to_indices.len(),
+        attrs = attrs.len(),
+        commits = commits.len(),
+        "Resolving historical builds to git commits"
+    );
+
+    for commit in &commits {
+        if unresolved_hashes.is_empty() {
+            break;
+        }
+
+        for attr in &attrs {
+            // Skip attributes that are fully resolved
+            if !unresolved_attrs.contains(attr) {
+                continue;
+            }
+
+            let target = format!("git+file:{}?rev={}#{}", dir, commit, attr);
+            let (ok, stdout, _) = run_cmd_full(nix, &["path-info", "--derivation", &target]);
+
+            let drv_path = stdout.trim().to_string();
+            if !ok && !drv_path.starts_with("/nix/store/") {
+                continue;
+            }
+
+            // Extract the drv hash from the result
+            let drv_filename = drv_path.split('/').next_back().unwrap_or("");
+            if drv_filename.len() <= 33 || drv_filename.as_bytes()[32] != b'-' {
+                continue;
+            }
+            let result_hash = &drv_filename[..32];
+
+            if let Some(indices) = drv_hash_to_indices.get(result_hash) {
+                if unresolved_hashes.contains(result_hash) {
+                    tracing::info!(
+                        commit = &commit[..8],
+                        attr,
+                        drv_hash = &result_hash[..8],
+                        "Matched historical build to git commit"
+                    );
+
+                    for &idx in indices {
+                        builds[idx].commit = commit.to_string();
+                        builds[idx].forge_url = forge_url.clone();
+                        builds[idx].owner = owner.clone();
+                        builds[idx].repo = repo.clone();
+                    }
+
+                    unresolved_hashes.remove(result_hash);
+
+                    // Track resolution progress per attribute
+                    let resolved = attr_resolved_count.entry(attr.clone()).or_default();
+                    *resolved += indices.len();
+                    if let Some(&total) = attr_total_count.get(attr) {
+                        if *resolved >= total {
+                            unresolved_attrs.remove(attr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !unresolved_hashes.is_empty() {
+        tracing::info!(
+            remaining = unresolved_hashes.len(),
+            "Some historical builds could not be matched to git commits"
+        );
+    }
 }
 
 /// Format a duration as a human-readable "ago" string
@@ -1224,6 +1469,7 @@ pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
             hbuild.id = base_id + (i as u64) + 1;
             builds.push(hbuild);
         }
+        resolve_historical_commits(&nix, &mut builds);
     }
 
     enrich_build_durations(&mut builds);
@@ -1544,14 +1790,14 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
             Build {
                 id: 1, derivation: "a".into(), status: BuildStatus::Passed,
                 duration: "1s".into(), time: "now".into(), branch: None,
-                commit: "abc".into(), owner: None, repo: None,
+                commit: "abc".into(), owner: None, repo: None, forge_url: None,
                 flake_ref: ".".into(), pr: None, override_inputs: vec![], log: vec![],
                 drv_path: None, store_path: None, in_store: true, historical: false, dirty: false,
             },
             Build {
                 id: 2, derivation: "b".into(), status: BuildStatus::Failed,
                 duration: "2s".into(), time: "now".into(), branch: None,
-                commit: "def".into(), owner: None, repo: None,
+                commit: "def".into(), owner: None, repo: None, forge_url: None,
                 flake_ref: ".".into(), pr: None,
                 override_inputs: vec![OverrideInput {
                     input_name: "nixpkgs".into(), input_type: "github".into(),
@@ -1582,6 +1828,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
             commit: "abc".into(),
             owner: None,
             repo: None,
+            forge_url: None,
             flake_ref: ".".into(),
             pr: None,
             override_inputs: vec![],

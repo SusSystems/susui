@@ -450,8 +450,8 @@ function OverridePill({ inputName, type, owner, repo, ref: gitRef, pr, flakeRef 
 function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog, priorBuilds }) {
   const cfg = statusConfig[build.status] || statusConfig.pending;
   const hasOv = build.overrideInputs && build.overrideInputs.length > 0;
-  const commitUrl = build.owner && build.repo && build.commit
-    ? "https://github.com/" + build.owner + "/" + build.repo + "/commit/" + build.commit : null;
+  const commitUrl = build.forgeUrl && build.owner && build.repo && build.commit
+    ? build.forgeUrl + "/" + build.owner + "/" + build.repo + "/commit/" + build.commit : null;
   const shortSha = build.commit ? build.commit.slice(0, 7) : "—";
   const flakeTarget = build.flakeRef + "#" + build.derivation;
   const overrideArgs = (build.overrideInputs || []).map(oi =>
@@ -508,7 +508,7 @@ function NixBuildRow({ build, isExpanded, onToggle, grouped, onFullLog, priorBui
             ${build.inStore && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output exists in the local nix store."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pass400 + "12", color: T.color.pass400, border: "1px solid " + T.color.pass400 + "20", letterSpacing: "0.04em" }}>● IN STORE</span></${DataHint}>`}
             ${!build.inStore && build.status !== "failed" && html`<${DataHint} commands=${[{ label: "Check store path", cmd: "nix path-info " + flakeTarget, source: "nix" }]} position="below" notes="Output not in local store. Run the build command to produce it."><span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.textTertiary + "12", color: T.color.textTertiary, border: "1px solid " + T.color.textTertiary + "20", letterSpacing: "0.04em" }}>◌ NOT BUILT</span></${DataHint}>`}
             ${hasOv && html`<span style=${{ fontSize: 9, fontWeight: 600, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.pending400 + "15", color: T.color.pending400, border: "1px solid " + T.color.pending400 + "20", letterSpacing: "0.04em" }}>⚑ ${build.overrideInputs.length} OVERRIDE${build.overrideInputs.length > 1 ? "S" : ""}</span>`}
-            ${build.pr && html`<a href=${"https://github.com/" + build.owner + "/" + build.repo + "/pull/" + build.pr} target="_blank" rel="noopener" class="gh-link" style=${{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: T.font.mono, fontSize: 10, color: T.color.running400, padding: "2px 6px", background: T.color.running400 + "12", borderRadius: T.radius.xs, border: "1px solid " + T.color.running400 + "20" }} onClick=${e => e.stopPropagation()}>PR #${build.pr}</a>`}
+            ${build.pr && build.forgeUrl && html`<a href=${build.forgeUrl + "/" + build.owner + "/" + build.repo + "/pull/" + build.pr} target="_blank" rel="noopener" class="gh-link" style=${{ display: "inline-flex", alignItems: "center", gap: 3, fontFamily: T.font.mono, fontSize: 10, color: T.color.running400, padding: "2px 6px", background: T.color.running400 + "12", borderRadius: T.radius.xs, border: "1px solid " + T.color.running400 + "20" }} onClick=${e => e.stopPropagation()}>PR #${build.pr}</a>`}
             ${!build.historical && priorBuilds && priorBuilds.length > 0 && html`<span style=${{ fontSize: 9, fontWeight: 500, fontFamily: T.font.mono, padding: "2px 6px", borderRadius: T.radius.xs, background: T.color.hint + "10", color: T.color.hint, border: "1px solid " + T.color.hint + "18", letterSpacing: "0.03em" }}>◷ ${priorBuilds.length} prior${priorBuilds.every(p => p.status === "passed") ? " ✓" : ""}</span>`}
           </div>
           <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, color: T.color.textTertiary, flexWrap: "wrap" }}>
@@ -668,12 +668,13 @@ function DrvGroup({ group, expandedBuild, onToggle, onFullLog, historicalByDeriv
 }
 
 // ─── COMMIT GROUP ──────────────────────────────────────────
-function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBuild, onToggle, onFullLog, historicalByDerivation }) {
+function CommitGroup({ commit, branch, owner, repo, forgeUrl, flakeRef, builds, expandedBuild, onToggle, onFullLog, historicalByDerivation }) {
   const isHistorical = branch === "historical";
   const isDirty = builds.some(b => b.dirty);
   const shortSha = commit ? commit.slice(0, 7) : "—";
-  const commitUrl = !isHistorical && !isDirty && owner && repo && commit
-    ? "https://github.com/" + owner + "/" + repo + "/commit/" + commit : null;
+  const isRealCommit = commit && commit.length === 40 && /^[0-9a-f]+$/.test(commit);
+  const commitUrl = (!isHistorical || isRealCommit) && !isDirty && owner && repo && forgeUrl && commit
+    ? forgeUrl + "/" + owner + "/" + repo + "/commit/" + commit : null;
   const passedCnt = builds.filter(b => b.status === "passed").length;
   const failedCnt = builds.filter(b => b.status === "failed").length;
   const inStoreCnt = builds.filter(b => b.inStore).length;
@@ -696,7 +697,10 @@ function CommitGroup({ commit, branch, owner, repo, flakeRef, builds, expandedBu
           <div style=${{ display: "flex", alignItems: "center", gap: 8, fontSize: T.fontSize.xs, flexWrap: "wrap" }}>
             ${isHistorical ? html`
               <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.hint + "15", borderRadius: T.radius.xs, color: T.color.hint, border: "1px solid " + T.color.hint + "25" }}>◷ prior build</span>
-              <span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${commit}</span>
+              ${commitUrl
+                ? html`<a href=${commitUrl} target="_blank" rel="noopener" class="gh-link" style=${{ fontFamily: T.font.mono, fontSize: T.fontSize.xs, display: "inline-flex", alignItems: "center", gap: 4 }}><${GHIcon} size=${10} /> ${shortSha}</a>`
+                : html`<span style=${{ fontFamily: T.font.mono, color: T.color.textTertiary }}>${commit}</span>`
+              }
             ` : html`
               <span style=${{ fontFamily: T.font.mono, padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs, color: T.color.textSecondary }}>⎇ ${branch || "main"}</span>
               ${isDirty ? html`
@@ -918,7 +922,7 @@ function App() {
     for (const b of ordered) {
       const key = b.commit + "|" + (b.branch || "") + "|" + b.flakeRef;
       if (!seen.has(key)) {
-        const group = { commit: b.commit, branch: b.branch, owner: b.owner, repo: b.repo, flakeRef: b.flakeRef, builds: [] };
+        const group = { commit: b.commit, branch: b.branch, owner: b.owner, repo: b.repo, forgeUrl: b.forgeUrl, flakeRef: b.flakeRef, builds: [] };
         groups.push(group);
         seen.set(key, group);
       }
