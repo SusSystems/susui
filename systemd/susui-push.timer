@@ -1,0 +1,6 @@
+[Unit]
+Description=Debounce timer for susui push
+
+[Timer]
+OnActiveSec=30s
+Persistent=false

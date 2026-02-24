@@ -1,0 +1,38 @@
+# susui push configuration
+# Copy to ~/.config/susui/push.env and adjust for your setup.
+
+# ── Flake to scan ──────────────────────────────────────────────────
+# Local path, github:Owner/Repo, or git+ssh://... URL
+SUSUI_FLAKE_REF=/home/gguy/Source/susui
+
+# Path to the susui binary ("susui" if on PATH, or full path)
+SUSUI_BIN=susui
+
+# ── Dashboard push target ─────────────────────────────────────────
+# Pushes a static HTML dashboard to a GitHub Pages branch.
+SUSUI_DASHBOARD_OWNER=SusSystems
+SUSUI_DASHBOARD_REPO=susui
+SUSUI_DASHBOARD_BRANCH=gh-pages
+# SUSUI_DASHBOARD_ORG=           # for GitHub Enterprise (instead of owner)
+# SUSUI_DASHBOARD_HOST=          # for GitHub Enterprise hostname
+# SUSUI_DASHBOARD_CNAME=         # custom domain for GitHub Pages
+# SUSUI_DASHBOARD_MESSAGE=       # custom commit message
+
+# ── Status push target ────────────────────────────────────────────
+# Pushes commit statuses (or check runs) to the source repo.
+SUSUI_STATUS_INPUT=self
+SUSUI_STATUS_TYPE=github
+SUSUI_STATUS_OWNER=SusSystems
+SUSUI_STATUS_REPO=susui
+SUSUI_STATUS_METHOD=commit_status
+SUSUI_STATUS_CONTEXT=nix-build/local
+# SUSUI_STATUS_ORG=              # for GitHub Enterprise (instead of owner)
+# SUSUI_STATUS_HOST=             # for GitHub Enterprise hostname
+# SUSUI_STATUS_CHECK_NAME=       # name for check_run method
+# SUSUI_STATUS_TARGET_URL=       # URL the status links to
+
+# ── Alternative: use an existing susui.yaml ────────────────────────
+# If you already have a susui.yaml with dashboard_push and status_push
+# configured, comment out the SUSUI_DASHBOARD_* and SUSUI_STATUS_* vars
+# above and set this instead:
+# SUSUI_WORKING_DIR=/home/gguy/Source/susui

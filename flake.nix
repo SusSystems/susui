@@ -50,11 +50,22 @@
               mainProgram = "susui";
             };
           };
+
+          susuiWithSetup = pkgs.symlinkJoin {
+            name = "susui-${susui.version}";
+            paths = [ susui ];
+            postBuild = ''
+              install -Dm755 ${./systemd/susui-setup.sh} $out/bin/susui-setup
+              install -Dm755 ${./systemd/susui-push.sh} $out/share/susui/susui-push.sh
+            '';
+            meta = susui.meta;
+          };
         in
         {
           packages = {
-            default = susui;
-            susui = susui;
+            default = susuiWithSetup;
+            susui = susuiWithSetup;
+            unwrapped = susui;
           };
 
           devShells.default = rustPkgs.mkShell {

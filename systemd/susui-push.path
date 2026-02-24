@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch Nix store DB for changes to trigger susui push
+
+[Path]
+PathModified=/nix/var/nix/db/db.sqlite
+Unit=susui-push.timer
+TriggerLimitBurst=5
+TriggerLimitIntervalSec=60
+
+[Install]
+WantedBy=default.target
