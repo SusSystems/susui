@@ -92,6 +92,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Generate dashboard and push to a GitHub repo via Git Data API
+    PushDashboard {
+        /// Flake reference
+        #[arg(default_value = ".")]
+        flake_ref: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Base path for the dashboard (e.g. "/" or "/susui")
+        #[arg(long, default_value = "/")]
+        base_path: String,
+    },
 }
 
 #[derive(Clone)]
@@ -138,6 +153,12 @@ async fn main() -> Result<()> {
             flake_ref,
             json,
         } => cmd_push_status(&flake_ref, json, &cfg).await,
+
+        Commands::PushDashboard {
+            flake_ref,
+            json,
+            base_path,
+        } => cmd_push_dashboard(&flake_ref, json, &base_path, &cfg).await,
     }
 }
 
@@ -370,6 +391,86 @@ async fn cmd_push_status(
                 println!("    error: {}", err);
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn cmd_push_dashboard(
+    flake_ref: &str,
+    json_output: bool,
+    base_path: &str,
+    cfg: &config::Config,
+) -> Result<()> {
+    let target = match &cfg.dashboard_push {
+        Some(t) => t,
+        None => {
+            anyhow::bail!(
+                "No dashboard_push target configured. Add it to susui.yaml:\n\
+                 \n\
+                 dashboard_push:\n\
+                 \x20 owner: my-org\n\
+                 \x20 repo: my-dashboard\n\
+                 \x20 branch: gh-pages\n\
+                 \x20 # cname: builds.example.com\n\
+                 \x20 # commit_message: \"Update dashboard\""
+            );
+        }
+    };
+
+    tracing::info!(flake_ref, "Generating dashboard for push");
+    let (metadata, builds) = collector::collect_all(flake_ref)?;
+    let stats = BuildStats::from_builds(&builds);
+
+    let builds_json = serde_json::to_string(&builds)?;
+    let meta_json = serde_json::to_string(&Some(&metadata))?;
+
+    let html_content = dashboard::static_dashboard_html(&builds_json, &meta_json);
+
+    // Build the file list
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        ("index.html".to_string(), html_content.into_bytes()),
+        (".nojekyll".to_string(), Vec::new()),
+        (
+            "api/builds.json".to_string(),
+            serde_json::to_string_pretty(&ApiResponse::success(&builds))?.into_bytes(),
+        ),
+        (
+            "api/stats.json".to_string(),
+            serde_json::to_string_pretty(&ApiResponse::success(stats))?.into_bytes(),
+        ),
+        (
+            "api/metadata.json".to_string(),
+            serde_json::to_string_pretty(&ApiResponse::success(&metadata))?.into_bytes(),
+        ),
+    ];
+
+    // Add CNAME if configured
+    if let Some(cname) = &target.cname {
+        files.push(("CNAME".to_string(), cname.as_bytes().to_vec()));
+    } else if base_path.contains('.') && !base_path.starts_with('/') {
+        files.push(("CNAME".to_string(), base_path.as_bytes().to_vec()));
+    }
+
+    let result = github::push_dashboard(target, files).await;
+
+    if json_output {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else if result.success {
+        println!("╭─ sus ui · dashboard pushed ─────────────────╮");
+        println!("│                                              │");
+        println!("│  Repo:   {:<36}│", result.repo);
+        println!("│  Branch: {:<36}│", result.branch);
+        println!(
+            "│  Commit: {:<36}│",
+            &result.commit_sha[..7.min(result.commit_sha.len())]
+        );
+        println!("│  Files:  {:<36}│", result.files_pushed);
+        println!("│                                              │");
+        println!("╰──────────────────────────────────────────────╯");
+    } else {
+        let err = result.error.as_deref().unwrap_or("unknown error");
+        anyhow::bail!("Dashboard push failed: {}", err);
     }
 
     Ok(())

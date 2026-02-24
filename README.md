@@ -11,6 +11,7 @@ A Rust CLI tool and web dashboard for inspecting Nix flake builds, derivation st
 - **Generate** — static HTML dashboard for GitHub Pages (no Jekyll)
 - **Info** — inspect flake metadata and resolved inputs
 - **Push Status** — push build results to GitHub as commit statuses or check runs using nix store context
+- **Push Dashboard** — generate and push the dashboard to a GitHub repo for Pages hosting via Git Data API
 
 ## Quick Start
 
@@ -39,6 +40,9 @@ susui generate . --output _site
 
 # Push build status to GitHub (uses nix store context, no builds triggered)
 susui push-status . --config susui.yaml
+
+# Generate and push dashboard to a GitHub repo
+GITHUB_TOKEN=ghp_... susui push-dashboard .
 ```
 
 ## Static Site Generation
@@ -105,6 +109,12 @@ status_push:
     repo: my-service
     method: check_run
     check_name: 'Nix Build'
+
+# Dashboard push — publish generated dashboard to a GitHub repo
+dashboard_push:
+  owner: my-org
+  repo: my-dashboard
+  branch: gh-pages
 ```
 
 ### Filter Rules
@@ -123,6 +133,28 @@ Push build results to GitHub as commit statuses or check runs. Status is derived
 | --------------- | ------------------------------------------- |
 | `commit_status` | `repo:status` or **Commit statuses: Write** |
 | `check_run`     | `checks:write` or **Checks: Write**         |
+
+### Dashboard Push
+
+Push the generated dashboard directly to a GitHub repository for Pages hosting. Uses the Git Data API — no local git clone needed. Requires `GITHUB_TOKEN` with `contents:write` permission on the target repo.
+
+```yaml
+dashboard_push:
+  owner: my-org
+  repo: my-dashboard
+  branch: gh-pages           # default: gh-pages
+  # host: github.example.com # for enterprise
+  # cname: builds.example.com
+  # commit_message: "Update dashboard"
+```
+
+```bash
+# Push dashboard to configured repo
+GITHUB_TOKEN=ghp_... susui push-dashboard .
+
+# With JSON output
+susui push-dashboard . --json
+```
 
 ## Data Source Hints
 

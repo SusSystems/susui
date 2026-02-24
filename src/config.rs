@@ -9,6 +9,9 @@ pub struct Config {
     pub filters: Filters,
     #[serde(default)]
     pub status_push: Vec<StatusPushTarget>,
+    /// Dashboard push target for publishing to a GitHub repo via Git Data API
+    #[serde(default)]
+    pub dashboard_push: Option<DashboardPushTarget>,
 }
 
 /// Filter configuration for controlling which builds are displayed
@@ -73,6 +76,35 @@ pub struct StatusPushTarget {
     /// Hostname for enterprise instances
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+}
+
+/// Dashboard push target — publish generated dashboard to a GitHub repo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DashboardPushTarget {
+    /// Repository owner (public GitHub)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Organization (enterprise GitHub)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    /// Target repository name
+    pub repo: String,
+    /// Branch to push to (default: gh-pages)
+    #[serde(default = "default_dashboard_branch")]
+    pub branch: String,
+    /// Hostname for enterprise instances
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// CNAME file content for custom domains
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cname: Option<String>,
+    /// Custom commit message
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_message: Option<String>,
+}
+
+fn default_dashboard_branch() -> String {
+    "gh-pages".to_string()
 }
 
 fn default_method() -> String {
@@ -286,11 +318,23 @@ status_push:
     repo: my-app
     method: commit_status
     context: "nix-build/local"
+dashboard_push:
+  owner: my-org
+  repo: my-dashboard
+  branch: gh-pages
+  cname: builds.example.com
+  commit_message: "Deploy dashboard"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.filters.allow.len(), 1);
         assert_eq!(config.filters.deny.len(), 1);
         assert_eq!(config.status_push.len(), 1);
         assert_eq!(config.status_push[0].context, "nix-build/local");
+        let dp = config.dashboard_push.unwrap();
+        assert_eq!(dp.owner.as_deref(), Some("my-org"));
+        assert_eq!(dp.repo, "my-dashboard");
+        assert_eq!(dp.branch, "gh-pages");
+        assert_eq!(dp.cname.as_deref(), Some("builds.example.com"));
+        assert_eq!(dp.commit_message.as_deref(), Some("Deploy dashboard"));
     }
 }
