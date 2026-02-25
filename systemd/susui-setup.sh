@@ -138,8 +138,10 @@ done
 step "Inspecting flake"
 
 FLAKE_JSON=""
+_flake_err=$(mktemp)
+trap 'rm -f "$_flake_err"' EXIT
 if command -v jq &>/dev/null; then
-    if FLAKE_JSON=$(nix flake metadata "$FLAKE_REF" --json 2>/dev/null); then
+    if FLAKE_JSON=$(nix flake metadata "$FLAKE_REF" --json --no-write-lock-file 2>"$_flake_err"); then
         ok "Retrieved flake metadata"
 
         # List all inputs
@@ -250,7 +252,12 @@ if command -v jq &>/dev/null; then
             fi
         fi
     else
-        warn "Could not read flake metadata (is the flake ref valid?)"
+        warn "Could not read flake metadata — skipping auto-detection"
+        # Show the last meaningful line of the nix error
+        if [ -s "$_flake_err" ]; then
+            _last_err=$(grep -v '^\s*$' "$_flake_err" | tail -1)
+            [ -n "$_last_err" ] && printf "  ${DIM}%s${RESET}\n" "$_last_err"
+        fi
     fi
 else
     warn "jq not found — skipping flake introspection (install jq for auto-detection)"
