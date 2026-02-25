@@ -414,7 +414,9 @@ Persistent=false
 UNIT
 ok "Wrote susui-push.timer"
 
-cat > "$SERVICE_UNIT" << 'UNIT'
+# Capture current PATH so the service can find nix-installed binaries
+_svc_path="$PATH"
+cat > "$SERVICE_UNIT" << UNIT
 [Unit]
 Description=Push susui build status and dashboard to GitHub
 After=network-online.target
@@ -422,6 +424,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+Environment=PATH=${_svc_path}
 EnvironmentFile=%h/.config/susui/push.env
 EnvironmentFile=%h/.config/susui/github-token.env
 ExecStart=%h/.config/susui/susui-push.sh
