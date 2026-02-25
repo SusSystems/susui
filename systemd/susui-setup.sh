@@ -153,7 +153,12 @@ if command -v jq &>/dev/null; then
                 if [ "$itype" = "github" ]; then
                     iowner=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // "?"')
                     irepo=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // "?"')
-                    printf "    ${GREEN}%s${RESET} (%s) → github:%s/%s\n" "$iname" "$itype" "$iowner" "$irepo"
+                    ihost=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.host // ""')
+                    if [ -n "$ihost" ]; then
+                        printf "    ${GREEN}%s${RESET} (%s) → github:%s:%s/%s\n" "$iname" "$itype" "$ihost" "$iowner" "$irepo"
+                    else
+                        printf "    ${GREEN}%s${RESET} (%s) → github:%s/%s\n" "$iname" "$itype" "$iowner" "$irepo"
+                    fi
                 else
                     iurl=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.url // "?"')
                     printf "    %s (%s) → %s\n" "$iname" "$itype" "$iurl"
@@ -163,7 +168,7 @@ if command -v jq &>/dev/null; then
 
         # Pick best input: prefer "src" (any type), else first github input
         DETECTED_INPUT="" DETECTED_OWNER="" DETECTED_REPO="" DETECTED_TYPE="" DETECTED_HOST=""
-        FIRST_GH_INPUT="" FIRST_GH_OWNER="" FIRST_GH_REPO=""
+        FIRST_GH_INPUT="" FIRST_GH_OWNER="" FIRST_GH_REPO="" FIRST_GH_HOST=""
 
         # parse_git_url <url> — extract owner/repo/host from a github git URL
         # Handles: ssh://git@host/owner/repo, git+ssh://…, https://host/owner/repo,
@@ -197,7 +202,7 @@ if command -v jq &>/dev/null; then
                 if [ "$itype" = "github" ]; then
                     DETECTED_OWNER=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
                     DETECTED_REPO=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
-                    DETECTED_HOST=""
+                    DETECTED_HOST=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.host // ""')
                 else
                     # git/git+ssh — parse URL for owner/repo/host
                     local_url=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.url // .locks.nodes[$n].locked.url // ""')
@@ -214,13 +219,14 @@ if command -v jq &>/dev/null; then
                 FIRST_GH_INPUT="$iname"
                 FIRST_GH_OWNER=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
                 FIRST_GH_REPO=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
+                FIRST_GH_HOST=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.host // ""')
             fi
         done <<< "$INPUT_NAMES"
 
         # Fall back to first github input if "src" not found
         if [ -z "$DETECTED_INPUT" ] && [ -n "$FIRST_GH_INPUT" ]; then
             DETECTED_INPUT="$FIRST_GH_INPUT"; DETECTED_OWNER="$FIRST_GH_OWNER"
-            DETECTED_REPO="$FIRST_GH_REPO"; DETECTED_TYPE="github"; DETECTED_HOST=""
+            DETECTED_REPO="$FIRST_GH_REPO"; DETECTED_TYPE="github"; DETECTED_HOST="$FIRST_GH_HOST"
         fi
 
         # Apply detected values as defaults (only if not already set from existing config)
