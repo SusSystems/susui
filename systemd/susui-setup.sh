@@ -343,6 +343,7 @@ mkdir -p "$CONFIG_DIR" "$SYSTEMD_DIR"
 ok "Created config directories"
 
 # 2. Copy push script
+rm -f "$CONFIG_DIR/susui-push.sh"
 cp "$PUSH_SCRIPT" "$CONFIG_DIR/susui-push.sh"
 chmod +x "$CONFIG_DIR/susui-push.sh"
 ok "Installed susui-push.sh"
