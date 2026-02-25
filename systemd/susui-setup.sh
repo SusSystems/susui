@@ -277,8 +277,12 @@ if ask_yn "Push build dashboard to GitHub Pages?" "${D_DASH_ENABLED:-Y}"; then
     ask "Dashboard repo owner" "$D_DASH_OWNER" DASH_OWNER
     ask "Dashboard repo name" "$D_DASH_REPO" DASH_REPO
     ask "Dashboard branch" "$D_DASH_BRANCH" DASH_BRANCH
+    # If a GHE host was detected, prompt for it directly
+    if [ -n "$D_DASH_HOST" ]; then
+        ask "GitHub Enterprise host" "$D_DASH_HOST" DASH_HOST
+    fi
     if ask_yn "Configure advanced dashboard options?" "N"; then
-        ask "GitHub Enterprise host (blank for github.com)" "$D_DASH_HOST" DASH_HOST
+        [ -z "$DASH_HOST" ] && ask "GitHub Enterprise host (blank for github.com)" "$D_DASH_HOST" DASH_HOST
         ask "Custom CNAME for Pages" "$D_DASH_CNAME" DASH_CNAME
         ask "Custom commit message" "$D_DASH_MESSAGE" DASH_MESSAGE
     fi
@@ -299,8 +303,12 @@ if ask_yn "Push commit statuses to GitHub?" "${D_STATUS_ENABLED:-Y}"; then
     ask "Status repo name" "$D_STATUS_REPO" STATUS_REPO
     ask "Status method (commit_status/check_run)" "$D_STATUS_METHOD" STATUS_METHOD
     ask "Status context" "$D_STATUS_CONTEXT" STATUS_CONTEXT
+    # If a GHE host was detected, prompt for it directly
+    if [ -n "$D_STATUS_HOST" ]; then
+        ask "GitHub Enterprise host" "$D_STATUS_HOST" STATUS_HOST
+    fi
     if ask_yn "Configure advanced status options?" "N"; then
-        ask "GitHub Enterprise host (blank for github.com)" "$D_STATUS_HOST" STATUS_HOST
+        [ -z "$STATUS_HOST" ] && ask "GitHub Enterprise host (blank for github.com)" "$D_STATUS_HOST" STATUS_HOST
         ask "Check run name" "$D_STATUS_CHECK_NAME" STATUS_CHECK_NAME
         ask "Target URL" "$D_STATUS_TARGET_URL" STATUS_TARGET_URL
     fi
