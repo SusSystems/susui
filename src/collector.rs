@@ -309,7 +309,7 @@ fn parse_flake_metadata(json_str: &str) -> Result<FlakeMetadata> {
 
 /// List flake outputs as attribute paths
 fn list_flake_outputs(nix: &str, flake_ref: &str) -> Result<Vec<String>> {
-    let output = run_cmd(nix, &["flake", "show", flake_ref, "--json"])?;
+    let output = run_cmd(nix, &["flake", "show", flake_ref, "--json", "--no-write-lock-file"])?;
     let v: serde_json::Value = serde_json::from_str(&output)?;
 
     let mut attrs = Vec::new();
@@ -340,7 +340,7 @@ fn collect_attrs(val: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
 /// Collect flake metadata for a given flake reference
 pub fn collect_flake_metadata(flake_ref: &str) -> Result<FlakeMetadata> {
     let nix = nix_bin();
-    let output = run_cmd(&nix, &["flake", "metadata", flake_ref, "--json"])?;
+    let output = run_cmd(&nix, &["flake", "metadata", flake_ref, "--json", "--no-write-lock-file"])?;
     parse_flake_metadata(&output)
 }
 
