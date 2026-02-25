@@ -51,7 +51,9 @@ else
 fi
 
 # Scan and hash the current build state
-CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" --json | sha256sum | cut -d' ' -f1)
+# scan may exit non-zero when some derivations fail to build — that's expected
+CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" --json || true)
+CURRENT_HASH=$(echo "$CURRENT_HASH" | sha256sum | cut -d' ' -f1)
 
 # Compare to cached hash
 if [ -f "$HASH_FILE" ] && [ "$(cat "$HASH_FILE")" = "$CURRENT_HASH" ]; then
