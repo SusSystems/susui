@@ -20,7 +20,7 @@ SUSUI_DASHBOARD_BRANCH=gh-pages
 
 # ── Status push target ────────────────────────────────────────────
 # Pushes commit statuses (or check runs) to the source repo.
-SUSUI_STATUS_INPUT=self
+SUSUI_STATUS_INPUT=src
 SUSUI_STATUS_TYPE=github
 SUSUI_STATUS_OWNER=SusSystems
 SUSUI_STATUS_REPO=susui

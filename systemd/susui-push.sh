@@ -30,7 +30,7 @@ if [ -n "${SUSUI_DASHBOARD_REPO:-}" ] || [ -n "${SUSUI_STATUS_REPO:-}" ]; then
     if [ -n "${SUSUI_STATUS_REPO:-}" ]; then
         {
             echo "status_push:"
-            echo "  - input: ${SUSUI_STATUS_INPUT:-self}"
+            echo "  - input: ${SUSUI_STATUS_INPUT:-src}"
             echo "    type: ${SUSUI_STATUS_TYPE:-github}"
             [ -n "${SUSUI_STATUS_OWNER:-}" ]      && echo "    owner: $SUSUI_STATUS_OWNER"
             [ -n "${SUSUI_STATUS_ORG:-}" ]        && echo "    org: $SUSUI_STATUS_ORG"

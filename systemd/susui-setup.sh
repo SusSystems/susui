@@ -71,7 +71,7 @@ TOKEN_EXIST=false
 D_FLAKE_REF="" D_BIN="susui"
 D_DASH_ENABLED="" D_DASH_OWNER="" D_DASH_REPO="" D_DASH_BRANCH="gh-pages"
 D_DASH_HOST="" D_DASH_CNAME="" D_DASH_MESSAGE=""
-D_STATUS_ENABLED="" D_STATUS_INPUT="self" D_STATUS_TYPE="github"
+D_STATUS_ENABLED="" D_STATUS_INPUT="" D_STATUS_TYPE=""
 D_STATUS_OWNER="" D_STATUS_REPO="" D_STATUS_METHOD="commit_status"
 D_STATUS_CONTEXT="nix-build/local" D_STATUS_CHECK_NAME="" D_STATUS_TARGET_URL="" D_STATUS_HOST=""
 
@@ -87,7 +87,7 @@ if $CONFIG_EXIST; then
     D_DASH_CNAME="${SUSUI_DASHBOARD_CNAME:-}"
     D_DASH_MESSAGE="${SUSUI_DASHBOARD_MESSAGE:-}"
     [ -n "$D_DASH_REPO" ] && D_DASH_ENABLED="Y"
-    D_STATUS_INPUT="${SUSUI_STATUS_INPUT:-self}"
+    D_STATUS_INPUT="${SUSUI_STATUS_INPUT:-src}"
     D_STATUS_TYPE="${SUSUI_STATUS_TYPE:-github}"
     D_STATUS_OWNER="${SUSUI_STATUS_OWNER:-}"
     D_STATUS_REPO="${SUSUI_STATUS_REPO:-}"
@@ -134,6 +134,73 @@ while true; do
     err "Flake ref is required"
 done
 
+# ── Flake introspection ───────────────────────────────────────────
+step "Inspecting flake"
+
+FLAKE_JSON=""
+if command -v jq &>/dev/null; then
+    if FLAKE_JSON=$(nix flake metadata "$FLAKE_REF" --json 2>/dev/null); then
+        ok "Retrieved flake metadata"
+
+        # List all inputs
+        INPUT_NAMES=$(echo "$FLAKE_JSON" | jq -r '.locks.nodes | keys[] | select(. != "root")')
+
+        # Display discovered inputs
+        if [ -n "$INPUT_NAMES" ]; then
+            printf "  ${DIM}Discovered inputs:${RESET}\n"
+            while IFS= read -r iname; do
+                itype=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].locked.type // .locks.nodes[$n].original.type // "unknown"')
+                if [ "$itype" = "github" ]; then
+                    iowner=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // "?"')
+                    irepo=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // "?"')
+                    printf "    ${GREEN}%s${RESET} (%s) → github:%s/%s\n" "$iname" "$itype" "$iowner" "$irepo"
+                else
+                    iurl=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.url // "?"')
+                    printf "    %s (%s) → %s\n" "$iname" "$itype" "$iurl"
+                fi
+            done <<< "$INPUT_NAMES"
+        fi
+
+        # Pick best github input: prefer "src", else first github input
+        DETECTED_INPUT="" DETECTED_OWNER="" DETECTED_REPO="" DETECTED_TYPE=""
+        FIRST_GH_INPUT="" FIRST_GH_OWNER="" FIRST_GH_REPO=""
+
+        while IFS= read -r iname; do
+            itype=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].locked.type // .locks.nodes[$n].original.type // "unknown"')
+            if [ "$itype" = "github" ]; then
+                iowner=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
+                irepo=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
+                if [ -z "$FIRST_GH_INPUT" ]; then
+                    FIRST_GH_INPUT="$iname"; FIRST_GH_OWNER="$iowner"; FIRST_GH_REPO="$irepo"
+                fi
+                if [ "$iname" = "src" ]; then
+                    DETECTED_INPUT="$iname"; DETECTED_OWNER="$iowner"; DETECTED_REPO="$irepo"; DETECTED_TYPE="github"
+                fi
+            fi
+        done <<< "$INPUT_NAMES"
+
+        # Fall back to first github input if "src" not found
+        if [ -z "$DETECTED_INPUT" ] && [ -n "$FIRST_GH_INPUT" ]; then
+            DETECTED_INPUT="$FIRST_GH_INPUT"; DETECTED_OWNER="$FIRST_GH_OWNER"
+            DETECTED_REPO="$FIRST_GH_REPO"; DETECTED_TYPE="github"
+        fi
+
+        # Apply detected values as defaults (only if not already set from existing config)
+        if [ -n "$DETECTED_INPUT" ]; then
+            ok "Auto-detected input: $DETECTED_INPUT (github:$DETECTED_OWNER/$DETECTED_REPO)"
+            [ -z "$D_STATUS_INPUT" ] && D_STATUS_INPUT="$DETECTED_INPUT"
+            [ -z "$D_STATUS_TYPE" ] && D_STATUS_TYPE="$DETECTED_TYPE"
+            [ -z "$D_STATUS_OWNER" ] && D_STATUS_OWNER="$DETECTED_OWNER"
+            [ -z "$D_STATUS_REPO" ] && D_STATUS_REPO="$DETECTED_REPO"
+            [ -z "$D_DASH_OWNER" ] && D_DASH_OWNER="$DETECTED_OWNER"
+        fi
+    else
+        warn "Could not read flake metadata (is the flake ref valid?)"
+    fi
+else
+    warn "jq not found — skipping flake introspection (install jq for auto-detection)"
+fi
+
 # 2. susui binary path
 ask "Path to susui binary" "$D_BIN" SUSUI_BIN
 
@@ -158,14 +225,14 @@ fi
 # 4. Status push
 echo
 STATUS_ENABLED=false
-STATUS_INPUT="self" STATUS_TYPE="github" STATUS_OWNER="" STATUS_REPO=""
+STATUS_INPUT="src" STATUS_TYPE="github" STATUS_OWNER="" STATUS_REPO=""
 STATUS_METHOD="commit_status" STATUS_CONTEXT="nix-build/local"
 STATUS_CHECK_NAME="" STATUS_TARGET_URL="" STATUS_HOST=""
 
 if ask_yn "Push commit statuses to GitHub?" "${D_STATUS_ENABLED:-Y}"; then
     STATUS_ENABLED=true
-    ask "Status input" "$D_STATUS_INPUT" STATUS_INPUT
-    ask "Status type (github/git)" "$D_STATUS_TYPE" STATUS_TYPE
+    ask "Status input" "${D_STATUS_INPUT:-src}" STATUS_INPUT
+    ask "Status type (github/git)" "${D_STATUS_TYPE:-github}" STATUS_TYPE
     ask "Status repo owner" "$D_STATUS_OWNER" STATUS_OWNER
     ask "Status repo name" "$D_STATUS_REPO" STATUS_REPO
     ask "Status method (commit_status/check_run)" "$D_STATUS_METHOD" STATUS_METHOD
