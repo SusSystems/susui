@@ -161,38 +161,87 @@ if command -v jq &>/dev/null; then
             done <<< "$INPUT_NAMES"
         fi
 
-        # Pick best github input: prefer "src", else first github input
-        DETECTED_INPUT="" DETECTED_OWNER="" DETECTED_REPO="" DETECTED_TYPE=""
+        # Pick best input: prefer "src" (any type), else first github input
+        DETECTED_INPUT="" DETECTED_OWNER="" DETECTED_REPO="" DETECTED_TYPE="" DETECTED_HOST=""
         FIRST_GH_INPUT="" FIRST_GH_OWNER="" FIRST_GH_REPO=""
+
+        # parse_git_url <url> — extract owner/repo/host from a github git URL
+        # Handles: ssh://git@host/owner/repo, git+ssh://…, https://host/owner/repo,
+        #          git@host:owner/repo
+        parse_git_url() {
+            local url="$1" host="" path=""
+            # Strip trailing .git
+            url="${url%.git}"
+            if [[ "$url" =~ ^(git\+ssh|ssh|https?)://([^/]*@)?([^/:]+)(:[0-9]+)?/(.+)$ ]]; then
+                host="${BASH_REMATCH[3]}"
+                path="${BASH_REMATCH[5]}"
+            elif [[ "$url" =~ ^[^@]+@([^:]+):(.+)$ ]]; then
+                host="${BASH_REMATCH[1]}"
+                path="${BASH_REMATCH[2]}"
+            fi
+            if [ -n "$path" ]; then
+                # path = owner/repo (possibly with extra segments — take first two)
+                GIT_URL_OWNER="${path%%/*}"
+                GIT_URL_REPO="${path#*/}"; GIT_URL_REPO="${GIT_URL_REPO%%/*}"
+                GIT_URL_HOST="$host"
+                return 0
+            fi
+            return 1
+        }
 
         while IFS= read -r iname; do
             itype=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].locked.type // .locks.nodes[$n].original.type // "unknown"')
-            if [ "$itype" = "github" ]; then
-                iowner=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
-                irepo=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
-                if [ -z "$FIRST_GH_INPUT" ]; then
-                    FIRST_GH_INPUT="$iname"; FIRST_GH_OWNER="$iowner"; FIRST_GH_REPO="$irepo"
+            if [ "$iname" = "src" ]; then
+                DETECTED_INPUT="src"
+                DETECTED_TYPE="$itype"
+                if [ "$itype" = "github" ]; then
+                    DETECTED_OWNER=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
+                    DETECTED_REPO=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
+                    DETECTED_HOST=""
+                else
+                    # git/git+ssh — parse URL for owner/repo/host
+                    local_url=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.url // .locks.nodes[$n].locked.url // ""')
+                    if [ -n "$local_url" ] && parse_git_url "$local_url"; then
+                        DETECTED_OWNER="$GIT_URL_OWNER"
+                        DETECTED_REPO="$GIT_URL_REPO"
+                        DETECTED_HOST="$GIT_URL_HOST"
+                        # git+ssh to a github host is effectively "github" for status purposes
+                        DETECTED_TYPE="github"
+                    fi
                 fi
-                if [ "$iname" = "src" ]; then
-                    DETECTED_INPUT="$iname"; DETECTED_OWNER="$iowner"; DETECTED_REPO="$irepo"; DETECTED_TYPE="github"
-                fi
+            fi
+            if [ "$itype" = "github" ] && [ -z "$FIRST_GH_INPUT" ]; then
+                FIRST_GH_INPUT="$iname"
+                FIRST_GH_OWNER=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.owner // ""')
+                FIRST_GH_REPO=$(echo "$FLAKE_JSON" | jq -r --arg n "$iname" '.locks.nodes[$n].original.repo // ""')
             fi
         done <<< "$INPUT_NAMES"
 
         # Fall back to first github input if "src" not found
         if [ -z "$DETECTED_INPUT" ] && [ -n "$FIRST_GH_INPUT" ]; then
             DETECTED_INPUT="$FIRST_GH_INPUT"; DETECTED_OWNER="$FIRST_GH_OWNER"
-            DETECTED_REPO="$FIRST_GH_REPO"; DETECTED_TYPE="github"
+            DETECTED_REPO="$FIRST_GH_REPO"; DETECTED_TYPE="github"; DETECTED_HOST=""
         fi
 
         # Apply detected values as defaults (only if not already set from existing config)
         if [ -n "$DETECTED_INPUT" ]; then
-            ok "Auto-detected input: $DETECTED_INPUT (github:$DETECTED_OWNER/$DETECTED_REPO)"
+            if [ -n "$DETECTED_HOST" ] && [ "$DETECTED_HOST" != "github.com" ]; then
+                ok "Auto-detected input: $DETECTED_INPUT (github:$DETECTED_HOST:$DETECTED_OWNER/$DETECTED_REPO)"
+            elif [ -n "$DETECTED_OWNER" ]; then
+                ok "Auto-detected input: $DETECTED_INPUT (github:$DETECTED_OWNER/$DETECTED_REPO)"
+            else
+                ok "Auto-detected input: $DETECTED_INPUT (type: $DETECTED_TYPE)"
+            fi
             [ -z "$D_STATUS_INPUT" ] && D_STATUS_INPUT="$DETECTED_INPUT"
             [ -z "$D_STATUS_TYPE" ] && D_STATUS_TYPE="$DETECTED_TYPE"
             [ -z "$D_STATUS_OWNER" ] && D_STATUS_OWNER="$DETECTED_OWNER"
             [ -z "$D_STATUS_REPO" ] && D_STATUS_REPO="$DETECTED_REPO"
             [ -z "$D_DASH_OWNER" ] && D_DASH_OWNER="$DETECTED_OWNER"
+            # Set GHE host if not github.com
+            if [ -n "$DETECTED_HOST" ] && [ "$DETECTED_HOST" != "github.com" ]; then
+                [ -z "$D_STATUS_HOST" ] && D_STATUS_HOST="$DETECTED_HOST"
+                [ -z "$D_DASH_HOST" ] && D_DASH_HOST="$DETECTED_HOST"
+            fi
         fi
     else
         warn "Could not read flake metadata (is the flake ref valid?)"
