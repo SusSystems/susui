@@ -63,11 +63,18 @@ fi
 
 echo "Build state changed, pushing..."
 
+PUSH_OK=true
+
 # Push commit status
-"$SUSUI_BIN" push-status "$SUSUI_FLAKE_REF" || echo "warning: push-status failed"
+"$SUSUI_BIN" push-status "$SUSUI_FLAKE_REF" || { echo "warning: push-status failed"; PUSH_OK=false; }
 
 # Push dashboard
-"$SUSUI_BIN" push-dashboard "$SUSUI_FLAKE_REF" || echo "warning: push-dashboard failed"
+"$SUSUI_BIN" push-dashboard "$SUSUI_FLAKE_REF" || { echo "warning: push-dashboard failed"; PUSH_OK=false; }
 
-# Cache the new hash only after both succeed without warning
-echo "$CURRENT_HASH" > "$HASH_FILE"
+# Only cache the hash when all pushes succeeded, so failed pushes are retried
+if $PUSH_OK; then
+    echo "$CURRENT_HASH" > "$HASH_FILE"
+else
+    echo "One or more pushes failed — will retry on next trigger."
+    rm -f "$HASH_FILE"
+fi
