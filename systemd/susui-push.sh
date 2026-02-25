@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'echo "ERROR: susui-push failed at line $LINENO (exit $?)" >&2' ERR
+
 # Per-instance cache directory keyed on flake ref
 INSTANCE_ID=$(echo -n "$SUSUI_FLAKE_REF" | sha256sum | cut -d' ' -f1)
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/susui/$INSTANCE_ID"
@@ -49,7 +51,7 @@ else
 fi
 
 # Scan and hash the current build state
-CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" --json 2>/dev/null | sha256sum | cut -d' ' -f1)
+CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" --json | sha256sum | cut -d' ' -f1)
 
 # Compare to cached hash
 if [ -f "$HASH_FILE" ] && [ "$(cat "$HASH_FILE")" = "$CURRENT_HASH" ]; then
