@@ -133,21 +133,29 @@ fn git_branch_containing(dir: &str, commit: &str) -> Option<String> {
         .find(|l| !l.is_empty())
 }
 
-/// Get the git remote forge URL, owner, and repo.
+/// Parse a git URL string into `(forge_url, owner, repo)`.
 ///
-/// Returns `(forge_url, owner, repo)` where `forge_url` is like `"https://github.com"`.
-/// Supports any git host: GitHub, GitLab, Gitea, etc.
+/// Works on raw URL strings from git remotes, nix flake metadata, or flake inputs.
+/// Handles nix-specific prefixes (`git+ssh://`, `git+https://`), query params (`?rev=…`),
+/// and fragment suffixes (`#attr`).
 ///
-/// Parsed URL formats:
+/// Supported URL formats:
 /// - `https://HOST/owner/repo.git` → `https://HOST`
 /// - `git@HOST:owner/repo.git` → `https://HOST`
 /// - `ssh://git@HOST/owner/repo.git` → `https://HOST`
+/// - `git+ssh://git@HOST/owner/repo.git` → `https://HOST`
+/// - `git+https://HOST/owner/repo.git` → `https://HOST`
 /// - `github:owner/repo` → `https://github.com` (nix shorthand)
-fn git_remote_info(dir: &str) -> (Option<String>, Option<String>, Option<String>) {
-    let url = match run_cmd("git", &["-C", dir, "remote", "get-url", "origin"]) {
-        Ok(u) => u.trim().to_string(),
-        Err(_) => return (None, None, None),
-    };
+fn parse_git_url(raw_url: &str) -> (Option<String>, Option<String>, Option<String>) {
+    // Strip nix git+ prefix: git+ssh:// → ssh://, git+https:// → https://
+    let url = raw_url
+        .strip_prefix("git+")
+        .unwrap_or(raw_url);
+
+    // Strip fragment (#attr) and query params (?rev=abc&ref=main)
+    let url = url.split('#').next().unwrap_or(url);
+    let url = url.split('?').next().unwrap_or(url);
+    let url = url.trim();
 
     // Nix shorthand: github:owner/repo
     if let Some(rest) = url.strip_prefix("github:") {
@@ -210,7 +218,7 @@ fn git_remote_info(dir: &str) -> (Option<String>, Option<String>, Option<String>
             let scheme_end = url.find("://").unwrap() + 3;
             format!("{}{}", &url[..scheme_end], &url[at_pos + 1..])
         } else {
-            url.clone()
+            url.to_string()
         };
         // cleaned = "https://HOST/owner/repo.git"
         let scheme_end = cleaned.find("://").unwrap() + 3;
@@ -229,6 +237,74 @@ fn git_remote_info(dir: &str) -> (Option<String>, Option<String>, Option<String>
     }
 
     (None, None, None)
+}
+
+/// Get the git remote forge URL, owner, and repo.
+///
+/// Returns `(forge_url, owner, repo)` where `forge_url` is like `"https://github.com"`.
+/// Fetches the origin remote URL via `git remote get-url origin` and delegates to `parse_git_url()`.
+fn git_remote_info(dir: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let url = match run_cmd("git", &["-C", dir, "remote", "get-url", "origin"]) {
+        Ok(u) => u.trim().to_string(),
+        Err(_) => return (None, None, None),
+    };
+    parse_git_url(&url)
+}
+
+/// Resolved git information for a flake, from local git or flake metadata.
+struct ResolvedGitInfo {
+    commit: String,
+    branch: Option<String>,
+    forge_url: Option<String>,
+    owner: Option<String>,
+    repo: Option<String>,
+    dirty: bool,
+}
+
+/// Resolve git info for a flake, trying local git first then falling back to flake metadata.
+///
+/// Priority order:
+/// 1. Local git (existing behavior for local refs like `.`, `path:`, `git+file:`)
+/// 2. `src` input from flake metadata (primary build subject for `--override-input src` workflows)
+/// 3. Flake's own revision from metadata
+fn resolve_git_info(flake_ref: &str, metadata: &FlakeMetadata) -> ResolvedGitInfo {
+    // 1. Try local git first (existing behavior for local refs)
+    if let Some(dir) = git_dir_from_flake_ref(flake_ref) {
+        if let Some(commit) = git_commit(&dir) {
+            let branch = git_branch(&dir);
+            let (forge_url, owner, repo) = git_remote_info(&dir);
+            let dirty = git_is_dirty(&dir);
+            return ResolvedGitInfo { commit, branch, forge_url, owner, repo, dirty };
+        }
+    }
+
+    // 2. Remote ref: prefer "src" input (primary build subject)
+    if let Some(src) = metadata.inputs.iter().find(|i| i.name == "src") {
+        if let Some(rev) = &src.locked_rev {
+            let (forge_url, owner, repo) = parse_git_url(&src.url);
+            let branch = src.locked_ref.clone();
+            return ResolvedGitInfo {
+                commit: rev.clone(),
+                branch,
+                forge_url,
+                owner,
+                repo,
+                dirty: false,
+            };
+        }
+    }
+
+    // 3. Final fallback: flake's own revision
+    let commit = metadata.revision.clone().unwrap_or_else(|| "0".repeat(40));
+    let (forge_url, owner, repo) = parse_git_url(&metadata.resolved_url);
+    ResolvedGitInfo {
+        commit,
+        branch: None,
+        forge_url,
+        owner,
+        repo,
+        dirty: false,
+    }
 }
 
 /// Parse nix flake metadata JSON
@@ -366,11 +442,12 @@ pub fn collect_flake_metadata(flake_ref: &str) -> Result<FlakeMetadata> {
 /// NOTE: This function is retained for testing purposes. The CLI never invokes
 /// builds directly — it only evaluates and introspects the nix store.
 #[allow(dead_code)]
-pub fn build_derivation(
+fn build_derivation(
     flake_ref: &str,
     attr: &str,
     overrides: &[(String, String)],
     id: u64,
+    git_info: &ResolvedGitInfo,
 ) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
@@ -398,13 +475,12 @@ pub fn build_derivation(
     // Parse log lines, filtering nix noise
     let log_lines = make_log_lines(&combined_output);
 
-    // Get git info from the working directory
-    let dir = git_dir_from_flake_ref(flake_ref).unwrap_or_else(|| ".".into());
-
-    let branch = git_branch(&dir);
-    let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
-    let (forge_url, owner, repo) = git_remote_info(&dir);
-    let dirty = git_is_dirty(&dir);
+    let branch = git_info.branch.clone();
+    let commit = git_info.commit.clone();
+    let forge_url = git_info.forge_url.clone();
+    let owner = git_info.owner.clone();
+    let repo = git_info.repo.clone();
+    let dirty = git_info.dirty;
 
     let status = if success {
         BuildStatus::Passed
@@ -461,7 +537,7 @@ pub fn build_derivation(
 ///   - Output in store → Passed (previously built successfully)
 ///   - Output NOT in store, eval succeeded → Unknown (not yet built)
 ///   - Eval failed → Failed
-pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
+fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitInfo) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
 
@@ -474,12 +550,12 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     // The derivation store path is the meaningful output
     let drv_path = stdout.trim().to_string();
 
-    let dir = git_dir_from_flake_ref(flake_ref).unwrap_or_else(|| ".".into());
-
-    let branch = git_branch(&dir);
-    let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
-    let (forge_url, owner, repo) = git_remote_info(&dir);
-    let dirty = git_is_dirty(&dir);
+    let branch = git_info.branch.clone();
+    let commit = git_info.commit.clone();
+    let forge_url = git_info.forge_url.clone();
+    let owner = git_info.owner.clone();
+    let repo = git_info.repo.clone();
+    let dirty = git_info.dirty;
 
     // If we got a .drv path back, the evaluation succeeded even if
     // the exit code was non-zero due to stderr warnings.
@@ -1368,7 +1444,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
 /// the exact `.drv` path, then compares against historical builds' drv hashes.
 /// When matched, updates the historical build with the real git commit, forge URL,
 /// owner, and repo.
-fn resolve_historical_commits(nix: &str, builds: &mut [Build]) {
+fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeMetadata) {
     use std::collections::{HashMap, HashSet};
 
     // Collect historical builds' drv hashes → build indices
@@ -1400,18 +1476,48 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build]) {
     }
 
     // Determine git directory from the first build's flake_ref
-    let dir = builds
+    let local_dir = builds
         .iter()
         .find(|b| !b.historical)
-        .and_then(|b| git_dir_from_flake_ref(&b.flake_ref))
-        .unwrap_or_else(|| ".".into());
+        .and_then(|b| git_dir_from_flake_ref(&b.flake_ref));
+
+    // Resolve forge_url/owner/repo — from local git or flake metadata
+    let (forge_url, owner, repo) = if let Some(ref dir) = local_dir {
+        git_remote_info(dir)
+    } else {
+        // Remote ref: derive from src input or flake URL
+        if let Some(src) = metadata.inputs.iter().find(|i| i.name == "src") {
+            parse_git_url(&src.url)
+        } else {
+            parse_git_url(&metadata.resolved_url)
+        }
+    };
+
+    // For remote refs without local git history, we can't walk git log to match
+    // drv hashes to commits. Populate forge info on historical builds and return.
+    let dir = match local_dir {
+        Some(d) => d,
+        None => {
+            tracing::info!(
+                historical_drvs = drv_hash_to_indices.len(),
+                "Remote flake ref — cannot resolve historical builds to git commits (no local git history)"
+            );
+            // Still populate forge_url/owner/repo so dashboard links work
+            for indices in drv_hash_to_indices.values() {
+                for &idx in indices {
+                    builds[idx].forge_url = forge_url.clone();
+                    builds[idx].owner = owner.clone();
+                    builds[idx].repo = repo.clone();
+                }
+            }
+            return;
+        }
+    };
 
     // Verify it's a git repo
     if git_commit(&dir).is_none() {
         return;
     }
-
-    let (forge_url, owner, repo) = git_remote_info(&dir);
 
     // Get unique attribute paths from historical builds
     let attrs: Vec<String> = historical_attrs.into_iter().collect();
@@ -1529,9 +1635,11 @@ fn format_duration_ago(d: std::time::Duration) -> String {
 }
 
 /// Scan a flake and return builds for all discovered outputs (evaluation only, no builds triggered)
-pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
+fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata) -> Result<Vec<Build>> {
     let nix = nix_bin();
     tracing::info!(flake_ref, "Scanning flake outputs");
+
+    let git_info = resolve_git_info(flake_ref, metadata);
 
     let outputs = list_flake_outputs(&nix, flake_ref)
         .with_context(|| format!("Failed to list outputs for {}", flake_ref))?;
@@ -1541,7 +1649,7 @@ pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
     let mut builds = Vec::new();
     for (i, attr) in outputs.iter().enumerate() {
         tracing::info!(attr, "Processing derivation");
-        let build = eval_derivation(flake_ref, attr, (i + 1) as u64);
+        let build = eval_derivation(flake_ref, attr, (i + 1) as u64, &git_info);
         builds.push(build);
     }
 
@@ -1556,7 +1664,7 @@ pub fn scan_flake(flake_ref: &str) -> Result<Vec<Build>> {
             hbuild.id = base_id + (i as u64) + 1;
             builds.push(hbuild);
         }
-        resolve_historical_commits(&nix, &mut builds);
+        resolve_historical_commits(&nix, &mut builds, metadata);
     }
 
     enrich_build_durations(&mut builds);
@@ -1669,7 +1777,7 @@ fn sort_by_dependency_order(builds: &mut [Build]) {
 /// Collect all data for a flake: metadata + builds (evaluation only, no builds triggered)
 pub fn collect_all(flake_ref: &str) -> Result<(FlakeMetadata, Vec<Build>)> {
     let metadata = collect_flake_metadata(flake_ref)?;
-    let builds = scan_flake(flake_ref)?;
+    let builds = scan_flake(flake_ref, &metadata)?;
     Ok((metadata, builds))
 }
 
@@ -1994,5 +2102,170 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
         assert_eq!(git_dir_from_flake_ref("github:NixOS/nixpkgs"), None);
         assert_eq!(git_dir_from_flake_ref("git+ssh://example.com/repo"), None);
         assert_eq!(git_dir_from_flake_ref("nixpkgs"), None);
+    }
+
+    #[test]
+    fn test_parse_git_url_ssh() {
+        // Plain ssh://
+        let (forge, owner, repo) = parse_git_url("ssh://git@github.ibm.com/GSKit/GSKit8-repo.git");
+        assert_eq!(forge.unwrap(), "https://github.ibm.com");
+        assert_eq!(owner.unwrap(), "GSKit");
+        assert_eq!(repo.unwrap(), "GSKit8-repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_git_plus_ssh() {
+        // Nix-style git+ssh:// — should strip git+ prefix
+        let (forge, owner, repo) = parse_git_url("git+ssh://git@github.ibm.com/GSKit/GSKit8-repo");
+        assert_eq!(forge.unwrap(), "https://github.ibm.com");
+        assert_eq!(owner.unwrap(), "GSKit");
+        assert_eq!(repo.unwrap(), "GSKit8-repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_git_plus_https() {
+        let (forge, owner, repo) = parse_git_url("git+https://github.com/NixOS/nixpkgs.git");
+        assert_eq!(forge.unwrap(), "https://github.com");
+        assert_eq!(owner.unwrap(), "NixOS");
+        assert_eq!(repo.unwrap(), "nixpkgs");
+    }
+
+    #[test]
+    fn test_parse_git_url_with_query_params() {
+        let (forge, owner, repo) = parse_git_url("git+ssh://git@github.ibm.com/GSKit/GSKit8-repo?rev=abc123&ref=main");
+        assert_eq!(forge.unwrap(), "https://github.ibm.com");
+        assert_eq!(owner.unwrap(), "GSKit");
+        assert_eq!(repo.unwrap(), "GSKit8-repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_with_fragment() {
+        let (forge, owner, repo) = parse_git_url("git+ssh://git@github.ibm.com/GSKit/GSKit8-repo#packages.x86_64-linux.default");
+        assert_eq!(forge.unwrap(), "https://github.ibm.com");
+        assert_eq!(owner.unwrap(), "GSKit");
+        assert_eq!(repo.unwrap(), "GSKit8-repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_with_query_and_fragment() {
+        let (forge, owner, repo) = parse_git_url("git+ssh://git@example.com/owner/repo?ref=dev#attr");
+        assert_eq!(forge.unwrap(), "https://example.com");
+        assert_eq!(owner.unwrap(), "owner");
+        assert_eq!(repo.unwrap(), "repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_github_shorthand() {
+        let (forge, owner, repo) = parse_git_url("github:NixOS/nixpkgs");
+        assert_eq!(forge.unwrap(), "https://github.com");
+        assert_eq!(owner.unwrap(), "NixOS");
+        assert_eq!(repo.unwrap(), "nixpkgs");
+    }
+
+    #[test]
+    fn test_parse_git_url_git_at() {
+        let (forge, owner, repo) = parse_git_url("git@gitlab.com:myorg/myrepo.git");
+        assert_eq!(forge.unwrap(), "https://gitlab.com");
+        assert_eq!(owner.unwrap(), "myorg");
+        assert_eq!(repo.unwrap(), "myrepo");
+    }
+
+    #[test]
+    fn test_parse_git_url_https() {
+        let (forge, owner, repo) = parse_git_url("https://github.com/owner/repo.git");
+        assert_eq!(forge.unwrap(), "https://github.com");
+        assert_eq!(owner.unwrap(), "owner");
+        assert_eq!(repo.unwrap(), "repo");
+    }
+
+    #[test]
+    fn test_parse_git_url_unknown() {
+        let (forge, owner, repo) = parse_git_url("nixpkgs");
+        assert!(forge.is_none());
+        assert!(owner.is_none());
+        assert!(repo.is_none());
+    }
+
+    #[test]
+    fn test_resolve_git_info_src_input_fallback() {
+        // When flake_ref is remote (no local git dir), should fall back to src input
+        let metadata = FlakeMetadata {
+            description: None,
+            url: "git+ssh://git@github.ibm.com/mattgreen/gskpkgs".to_string(),
+            resolved_url: "git+ssh://git@github.ibm.com/mattgreen/gskpkgs".to_string(),
+            revision: Some("aaa111".to_string()),
+            inputs: vec![
+                FlakeInput {
+                    name: "src".to_string(),
+                    input_type: "git".to_string(),
+                    url: "git+ssh://git@github.ibm.com/GSKit/GSKit8-repo".to_string(),
+                    locked_rev: Some("bbb222".to_string()),
+                    locked_ref: Some("main".to_string()),
+                    last_modified: None,
+                },
+                FlakeInput {
+                    name: "nixpkgs".to_string(),
+                    input_type: "github".to_string(),
+                    url: "github:NixOS/nixpkgs".to_string(),
+                    locked_rev: Some("ccc333".to_string()),
+                    locked_ref: None,
+                    last_modified: None,
+                },
+            ],
+        };
+
+        let info = resolve_git_info("git+ssh://git@github.ibm.com/mattgreen/gskpkgs", &metadata);
+        // Should use src input's commit, not flake's own revision
+        assert_eq!(info.commit, "bbb222");
+        assert_eq!(info.branch.as_deref(), Some("main"));
+        assert_eq!(info.forge_url.as_deref(), Some("https://github.ibm.com"));
+        assert_eq!(info.owner.as_deref(), Some("GSKit"));
+        assert_eq!(info.repo.as_deref(), Some("GSKit8-repo"));
+        assert!(!info.dirty);
+    }
+
+    #[test]
+    fn test_resolve_git_info_flake_revision_fallback() {
+        // When flake_ref is remote and no src input, should fall back to flake revision
+        let metadata = FlakeMetadata {
+            description: None,
+            url: "git+ssh://git@github.ibm.com/mattgreen/gskpkgs".to_string(),
+            resolved_url: "git+ssh://git@github.ibm.com/mattgreen/gskpkgs".to_string(),
+            revision: Some("aaa111".to_string()),
+            inputs: vec![
+                FlakeInput {
+                    name: "nixpkgs".to_string(),
+                    input_type: "github".to_string(),
+                    url: "github:NixOS/nixpkgs".to_string(),
+                    locked_rev: Some("ccc333".to_string()),
+                    locked_ref: None,
+                    last_modified: None,
+                },
+            ],
+        };
+
+        let info = resolve_git_info("git+ssh://git@github.ibm.com/mattgreen/gskpkgs", &metadata);
+        assert_eq!(info.commit, "aaa111");
+        assert_eq!(info.forge_url.as_deref(), Some("https://github.ibm.com"));
+        assert_eq!(info.owner.as_deref(), Some("mattgreen"));
+        assert_eq!(info.repo.as_deref(), Some("gskpkgs"));
+    }
+
+    #[test]
+    fn test_resolve_git_info_no_revision_fallback() {
+        // When flake_ref is remote, no src input, and no revision — should get all zeros
+        let metadata = FlakeMetadata {
+            description: None,
+            url: "git+ssh://git@example.com/org/repo".to_string(),
+            resolved_url: "git+ssh://git@example.com/org/repo".to_string(),
+            revision: None,
+            inputs: vec![],
+        };
+
+        let info = resolve_git_info("git+ssh://git@example.com/org/repo", &metadata);
+        assert_eq!(info.commit, "0".repeat(40));
+        assert_eq!(info.forge_url.as_deref(), Some("https://example.com"));
+        assert_eq!(info.owner.as_deref(), Some("org"));
+        assert_eq!(info.repo.as_deref(), Some("repo"));
     }
 }
