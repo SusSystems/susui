@@ -524,6 +524,7 @@ fn build_derivation(
         in_store: success,
         historical: false,
         dirty,
+        is_alias: false,
     }
 }
 
@@ -603,6 +604,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
             in_store: false,
             historical: false,
             dirty,
+            is_alias: false,
         };
     }
 
@@ -657,6 +659,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
         in_store,
         historical: false,
         dirty,
+        is_alias: false,
     }
 }
 
@@ -1278,15 +1281,12 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
         .collect()
 }
 
-/// Discover historical builds by scanning `/nix/store/` for prior `.drv` files
-/// that share the same derivation name as current builds. Includes passed builds
-/// (output in store), failed builds (build log exists), and unknown builds
+/// Discover historical builds by querying the nix SQLite database for prior `.drv`
+/// files that share the same derivation name as current builds. Includes passed
+/// builds (output in store), failed builds (build log exists), and unknown builds
 /// (evaluation succeeded but not yet built or in progress).
 ///
-/// This directly scans the store instead of relying on build logs in
-/// `/nix/var/log/nix/drvs/`, which makes it more reliable — it catches builds
-/// from binary caches, builds whose logs were cleaned up, and builds performed
-/// on other machines.
+/// Uses the nix DB instead of filesystem scanning for reliability and performance.
 fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
     // Build a map of derivation names → current drv hashes (to exclude)
     // Also map drv_name → (flake_ref, derivation attr) for building the Build entry
@@ -1324,148 +1324,117 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
         return Vec::new();
     }
 
-    // Build suffix patterns for matching .drv files in the store
-    let suffixes: Vec<(String, String)> = current_hashes
-        .keys()
-        .map(|name| (format!("-{}.drv", name), name.clone()))
+    // Query the nix DB for matching .drv paths
+    let name_patterns: Vec<String> = current_hashes.keys().cloned().collect();
+    let db_matches = crate::nixdb::find_drvs_by_name(&name_patterns);
+
+    // Filter out current hashes
+    let historical_drvs: Vec<(String, String, String)> = db_matches
+        .into_iter()
+        .filter(|(_path, name, hash)| {
+            current_hashes
+                .get(name)
+                .map_or(true, |cur| !cur.contains(hash))
+        })
         .collect();
 
-    let store_dir = std::path::Path::new("/nix/store");
+    if historical_drvs.is_empty() {
+        return Vec::new();
+    }
+
+    // Query outputs for all historical drvs
+    let drv_paths: Vec<String> = historical_drvs.iter().map(|(p, _, _)| p.clone()).collect();
+    let outputs_map = crate::nixdb::find_outputs_for_drvs(&drv_paths);
+
     let mut historical_builds = Vec::new();
 
-    let entries = match std::fs::read_dir(store_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
+    for (old_drv_path, drv_name, drv_hash) in &historical_drvs {
+        let attrs = match drv_name_info.get(drv_name.as_str()) {
+            Some(info) => info.clone(),
+            None => continue,
+        };
 
-    for entry in entries.flatten() {
-        let fname = entry.file_name();
-        let fname_str = fname.to_string_lossy();
+        // Check outputs from the DB query
+        let db_outputs = outputs_map.get(old_drv_path.as_str());
 
-        // Only look at .drv files
-        if !fname_str.ends_with(".drv") {
-            continue;
-        }
+        // Determine if any output path actually exists in the store
+        let found_output: Option<(String, i64)> = db_outputs
+            .and_then(|outs| {
+                outs.iter()
+                    .find(|(path, _)| std::path::Path::new(path).exists())
+                    .cloned()
+            });
 
-        // Must have standard nix hash format: <32-char hash>-<name>.drv
-        if fname_str.len() <= 33 || fname_str.as_bytes()[32] != b'-' {
-            continue;
-        }
-
-        let file_hash = &fname_str[..32];
-
-        // Check if this matches any of our derivation names
-        for (suffix, drv_name) in &suffixes {
-            if !fname_str.ends_with(suffix.as_str()) {
-                continue;
-            }
-
-            // Skip current derivation hashes
-            if let Some(cur_hashes) = current_hashes.get(drv_name.as_str()) {
-                if cur_hashes.contains(file_hash) {
-                    continue;
-                }
-            }
-
-            let attrs = match drv_name_info.get(drv_name.as_str()) {
-                Some(info) => info.clone(),
-                None => continue,
-            };
-
-            let old_drv_path = format!("/nix/store/{}", fname_str);
-
-            // Query outputs via nix-store -q --outputs
-            let (ok, stdout, _) =
-                run_cmd_full("nix-store", &["-q", "--outputs", &old_drv_path]);
-            if !ok {
-                continue;
-            }
-
-            let output_paths: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-            if output_paths.is_empty() {
-                continue;
-            }
-
-            // Check if any output path exists in the store
-            let mut found_output: Option<String> = None;
-            for out_path in &output_paths {
-                if std::path::Path::new(out_path).exists() {
-                    found_output = Some(out_path.to_string());
-                    break;
-                }
-            }
-
-            // Determine status and metadata based on whether the output exists
-            let (status, store_path, in_store, time_str) = if let Some(out_path) = found_output {
-                let time_str = std::fs::metadata(&out_path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|mtime| {
-                        let elapsed = mtime.elapsed().unwrap_or_default();
-                        format_duration_ago(elapsed)
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-                (BuildStatus::Passed, Some(out_path), true, time_str)
+        // Determine status and metadata
+        let (status, store_path, in_store, time_str) = if let Some((out_path, reg_time)) = found_output {
+            let time_str = if reg_time > 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let elapsed = std::time::Duration::from_secs((now - reg_time).max(0) as u64);
+                format_duration_ago(elapsed)
             } else {
-                // No output — check if a build log exists (failed build)
-                let drv_basename = fname_str.as_ref();
-                let log_exists = if drv_basename.len() >= 3 {
-                    let prefix = &drv_basename[..2];
-                    let rest = &drv_basename[2..];
-                    let log_file = format!("/nix/var/log/nix/drvs/{}/{}.bz2", prefix, rest);
-                    std::path::Path::new(&log_file).exists()
-                } else {
-                    false
-                };
-                // Use the drv file's mtime as a rough timestamp
-                let time_str = std::fs::metadata(&old_drv_path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .map(|mtime| {
-                        let elapsed = mtime.elapsed().unwrap_or_default();
-                        format_duration_ago(elapsed)
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-                if log_exists {
-                    (BuildStatus::Failed, None, false, time_str)
-                } else {
-                    (BuildStatus::Unknown, None, false, time_str)
-                }
+                "unknown".to_string()
             };
-
-            // Retrieve build log
-            let log_lines = try_cached_log(nix, &old_drv_path, "historical build")
-                .or_else(|| try_direct_log_file(&old_drv_path))
-                .unwrap_or_default();
-
-            let short_hash = &file_hash[..std::cmp::min(7, file_hash.len())];
-
-            // Emit a Build for each flake attribute that maps to this drv name
-            for (flake_ref, derivation_attr) in &attrs {
-                historical_builds.push(Build {
-                    id: 0, // Will be reassigned later
-                    derivation: derivation_attr.to_string(),
-                    status: status.clone(),
-                    duration: "—".to_string(),
-                    time: time_str.clone(),
-                    branch: Some("historical".to_string()),
-                    commit: format!("{}…{}", short_hash, drv_name),
-                    owner: None,
-                    repo: None,
-                    forge_url: None,
-                    flake_ref: flake_ref.to_string(),
-                    pr: None,
-                    override_inputs: vec![],
-                    log: log_lines.clone(),
-                    drv_path: Some(old_drv_path.clone()),
-                    store_path: store_path.clone(),
-                    in_store,
-                    historical: true,
-                    dirty: false,
-                });
+            (BuildStatus::Passed, Some(out_path), true, time_str)
+        } else {
+            // No output — check if a build log exists (failed build)
+            let drv_basename = old_drv_path.split('/').next_back().unwrap_or("");
+            let log_exists = if drv_basename.len() >= 3 {
+                let prefix = &drv_basename[..2];
+                let rest = &drv_basename[2..];
+                let log_file = format!("/nix/var/log/nix/drvs/{}/{}.bz2", prefix, rest);
+                std::path::Path::new(&log_file).exists()
+            } else {
+                false
+            };
+            let time_str = std::fs::metadata(old_drv_path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|mtime| {
+                    let elapsed = mtime.elapsed().unwrap_or_default();
+                    format_duration_ago(elapsed)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            if log_exists {
+                (BuildStatus::Failed, None, false, time_str)
+            } else {
+                (BuildStatus::Unknown, None, false, time_str)
             }
+        };
 
-            break; // Found a match for this entry, don't check other suffixes
+        // Retrieve build log
+        let log_lines = try_cached_log(nix, old_drv_path, "historical build")
+            .or_else(|| try_direct_log_file(old_drv_path))
+            .unwrap_or_default();
+
+        let short_hash = &drv_hash[..std::cmp::min(7, drv_hash.len())];
+
+        // Emit a Build for each flake attribute that maps to this drv name
+        for (flake_ref, derivation_attr) in &attrs {
+            historical_builds.push(Build {
+                id: 0, // Will be reassigned later
+                derivation: derivation_attr.to_string(),
+                status: status.clone(),
+                duration: "—".to_string(),
+                time: time_str.clone(),
+                branch: Some("historical".to_string()),
+                commit: format!("{}…{}", short_hash, drv_name),
+                owner: None,
+                repo: None,
+                forge_url: None,
+                flake_ref: flake_ref.to_string(),
+                pr: None,
+                override_inputs: vec![],
+                log: log_lines.clone(),
+                drv_path: Some(old_drv_path.clone()),
+                store_path: store_path.clone(),
+                in_store,
+                historical: true,
+                dirty: false,
+                is_alias: false,
+            });
         }
     }
 
@@ -1671,6 +1640,280 @@ fn format_duration_ago(d: std::time::Duration) -> String {
     }
 }
 
+/// Discover builds from the nix store using attribute name hints when flake
+/// evaluation fails (all drv_paths are None).
+///
+/// Extracts leaf names from attribute paths (e.g. `packages.x86_64-linux.susui` → `susui`),
+/// queries the nix DB for matching `.drv` paths, checks outputs, and creates Build records.
+fn discover_builds_by_attr_hints(
+    nix: &str,
+    failed_attrs: &[String],
+    flake_ref: &str,
+    git_info: &ResolvedGitInfo,
+    exclude_hashes: &std::collections::HashSet<String>,
+) -> Vec<Build> {
+    use std::collections::HashMap;
+
+    // Extract leaf names from attribute paths, skipping "default"
+    // Also track which category each attr belongs to for alias detection
+    let mut leaf_names: Vec<String> = Vec::new();
+    let mut default_attrs: Vec<String> = Vec::new();
+    let mut leaf_to_attrs: HashMap<String, Vec<String>> = HashMap::new();
+
+    for attr in failed_attrs {
+        let leaf = attr.split('.').next_back().unwrap_or(attr);
+        if leaf == "default" {
+            default_attrs.push(attr.clone());
+        } else {
+            if !leaf_names.contains(&leaf.to_string()) {
+                leaf_names.push(leaf.to_string());
+            }
+            leaf_to_attrs
+                .entry(leaf.to_string())
+                .or_default()
+                .push(attr.clone());
+        }
+    }
+
+    if leaf_names.is_empty() {
+        return Vec::new();
+    }
+
+    // Query the nix DB for .drv paths matching the leaf names as prefixes
+    // e.g. "susui" matches "susui-0.1.0"
+    let db_matches = find_drvs_by_leaf_prefix(&leaf_names);
+
+    if db_matches.is_empty() {
+        tracing::debug!("No matching .drv paths found in nix DB for attr hints");
+        return Vec::new();
+    }
+
+    // Filter out excluded hashes
+    let filtered: Vec<(String, String, String)> = db_matches
+        .into_iter()
+        .filter(|(_path, _name, hash)| !exclude_hashes.contains(hash))
+        .collect();
+
+    if filtered.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by derivation name and pick the best (most recent) for each leaf
+    // drv_name → Vec<(drv_path, drv_name, drv_hash)>
+    let mut by_name: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for entry in &filtered {
+        by_name.entry(entry.1.clone()).or_default().push(entry.clone());
+    }
+
+    // Map each leaf name to its matching drv name group
+    // "susui" matches "susui-0.1.0" if the drv name starts with "susui-" or equals "susui"
+    let mut leaf_matches: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for (drv_name, entries) in &by_name {
+        for leaf in &leaf_names {
+            if drv_name == leaf || drv_name.starts_with(&format!("{}-", leaf)) {
+                leaf_matches
+                    .entry(leaf.clone())
+                    .or_default()
+                    .extend(entries.clone());
+            }
+        }
+    }
+
+    // Query outputs for all matched drvs
+    let all_drv_paths: Vec<String> = filtered.iter().map(|(p, _, _)| p.clone()).collect();
+    let outputs_map = crate::nixdb::find_outputs_for_drvs(&all_drv_paths);
+
+    let mut builds = Vec::new();
+
+    // For each leaf name match, create Build records
+    for (leaf, matches) in &leaf_matches {
+        let attrs = match leaf_to_attrs.get(leaf) {
+            Some(a) => a,
+            None => continue,
+        };
+
+        for (drv_path, _drv_name, _drv_hash) in matches {
+            // Check outputs
+            let db_outputs = outputs_map.get(drv_path.as_str());
+            let found_output = db_outputs.and_then(|outs| {
+                outs.iter()
+                    .find(|(path, _)| std::path::Path::new(path).exists())
+                    .cloned()
+            });
+
+            let (status, store_path, in_store, time_str) = if let Some((out_path, reg_time)) = found_output {
+                let time_str = if reg_time > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let elapsed = std::time::Duration::from_secs((now - reg_time).max(0) as u64);
+                    format_duration_ago(elapsed)
+                } else {
+                    "unknown".to_string()
+                };
+                (BuildStatus::Passed, Some(out_path), true, time_str)
+            } else {
+                // Check for build log
+                let drv_basename = drv_path.split('/').next_back().unwrap_or("");
+                let log_exists = if drv_basename.len() >= 3 {
+                    let prefix = &drv_basename[..2];
+                    let rest = &drv_basename[2..];
+                    let log_file = format!("/nix/var/log/nix/drvs/{}/{}.bz2", prefix, rest);
+                    std::path::Path::new(&log_file).exists()
+                } else {
+                    false
+                };
+                let time_str = std::fs::metadata(drv_path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|mtime| format_duration_ago(mtime.elapsed().unwrap_or_default()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                if log_exists {
+                    (BuildStatus::Failed, None, false, time_str)
+                } else {
+                    (BuildStatus::Unknown, None, false, time_str)
+                }
+            };
+
+            let log_lines = try_cached_log(nix, drv_path, "discovered build")
+                .or_else(|| try_direct_log_file(drv_path))
+                .unwrap_or_default();
+
+            for attr in attrs {
+                builds.push(Build {
+                    id: 0,
+                    derivation: attr.clone(),
+                    status: status.clone(),
+                    duration: "—".to_string(),
+                    time: time_str.clone(),
+                    branch: git_info.branch.clone(),
+                    commit: git_info.commit.clone(),
+                    owner: git_info.owner.clone(),
+                    repo: git_info.repo.clone(),
+                    forge_url: git_info.forge_url.clone(),
+                    flake_ref: flake_ref.to_string(),
+                    pr: None,
+                    override_inputs: vec![],
+                    log: log_lines.clone(),
+                    drv_path: Some(drv_path.clone()),
+                    store_path: store_path.clone(),
+                    in_store,
+                    historical: true,
+                    dirty: false,
+                    is_alias: false,
+                });
+            }
+        }
+    }
+
+    // Handle default aliases: if packages.x86_64-linux.default exists and
+    // there's exactly one packages.* match, emit a Build for default too
+    for default_attr in &default_attrs {
+        // Find the category prefix: "packages.x86_64-linux.default" → "packages.x86_64-linux."
+        let prefix = default_attr.rsplit_once('.').map(|(p, _)| format!("{}.", p)).unwrap_or_default();
+        if prefix.is_empty() {
+            continue;
+        }
+
+        // Find builds matching this category prefix
+        let category_builds: Vec<&Build> = builds
+            .iter()
+            .filter(|b| b.derivation.starts_with(&prefix) && b.derivation != *default_attr)
+            .collect();
+
+        if category_builds.len() == 1 {
+            // Exactly one match — create an alias
+            let source = category_builds[0];
+            builds.push(Build {
+                id: 0,
+                derivation: default_attr.clone(),
+                status: source.status.clone(),
+                duration: source.duration.clone(),
+                time: source.time.clone(),
+                branch: source.branch.clone(),
+                commit: source.commit.clone(),
+                owner: source.owner.clone(),
+                repo: source.repo.clone(),
+                forge_url: source.forge_url.clone(),
+                flake_ref: source.flake_ref.clone(),
+                pr: None,
+                override_inputs: vec![],
+                log: source.log.clone(),
+                drv_path: source.drv_path.clone(),
+                store_path: source.store_path.clone(),
+                in_store: source.in_store,
+                historical: true,
+                dirty: false,
+                is_alias: true,
+            });
+        }
+    }
+
+    // Re-assign IDs
+    for (i, build) in builds.iter_mut().enumerate() {
+        build.id = (i + 1) as u64;
+    }
+
+    builds
+}
+
+/// Query the nix DB for .drv paths where the derivation name starts with one
+/// of the given leaf prefixes (e.g. "susui" matches "susui-0.1.0").
+fn find_drvs_by_leaf_prefix(leaf_names: &[String]) -> Vec<(String, String, String)> {
+    use rusqlite::{Connection, OpenFlags};
+
+    let conn = match Connection::open_with_flags(
+        "/nix/var/nix/db/db.sqlite",
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("nixdb: failed to open for leaf prefix query: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut results = Vec::new();
+
+    for leaf in leaf_names {
+        // Match exact name or name with version suffix: "susui" → "%-susui.drv" or "%-susui-%.drv"
+        for like_pattern in &[
+            format!("/nix/store/%-{}.drv", leaf),
+            format!("/nix/store/%-{}-%", leaf),  // versioned: susui-0.1.0.drv
+        ] {
+            let mut stmt = match conn.prepare(
+                "SELECT path FROM ValidPaths WHERE path LIKE ? AND path LIKE '%.drv'",
+            ) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let rows = match stmt.query_map([like_pattern], |row| row.get::<_, String>(0)) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            for path in rows.flatten() {
+                let fname = path.split('/').next_back().unwrap_or("");
+                if fname.len() > 33 && fname.as_bytes()[32] == b'-' {
+                    let hash = fname[..32].to_string();
+                    let name = fname[33..].trim_end_matches(".drv").to_string();
+                    // Verify the name actually starts with this leaf
+                    if name == *leaf || name.starts_with(&format!("{}-", leaf)) {
+                        results.push((path, name, hash));
+                    }
+                }
+            }
+        }
+    }
+
+    // Deduplicate by drv_path
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results.dedup_by(|a, b| a.0 == b.0);
+
+    results
+}
+
 /// Scan a flake and return builds for all discovered outputs (evaluation only, no builds triggered)
 fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, String)]) -> Result<Vec<Build>> {
     let nix = nix_bin();
@@ -1690,23 +1933,92 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, S
         builds.push(build);
     }
 
-    sort_by_dependency_order(&mut builds);
+    // Check if all evaluations failed (all drv_paths are None)
+    let all_failed = !builds.is_empty() && builds.iter().all(|b| b.drv_path.is_none());
 
-    // Discover historical builds from the nix log cache
-    let historical = find_historical_builds(&nix, &builds);
-    if !historical.is_empty() {
-        tracing::info!(count = historical.len(), "Found historical builds in store");
-        let base_id = builds.len() as u64;
-        for (i, mut hbuild) in historical.into_iter().enumerate() {
-            hbuild.id = base_id + (i as u64) + 1;
-            builds.push(hbuild);
+    if all_failed {
+        // Use attribute name hints to discover builds from the store
+        let failed_attrs: Vec<String> = outputs.clone();
+        let discovered = discover_builds_by_attr_hints(
+            &nix,
+            &failed_attrs,
+            flake_ref,
+            &git_info,
+            &std::collections::HashSet::new(),
+        );
+        if !discovered.is_empty() {
+            tracing::info!(
+                count = discovered.len(),
+                "Discovered builds from store (eval failed, using attr hints)"
+            );
+            // Replace failed builds with discovered builds
+            builds = discovered;
+            // Re-assign IDs
+            for (i, build) in builds.iter_mut().enumerate() {
+                build.id = (i + 1) as u64;
+            }
         }
-        resolve_historical_commits(&nix, &mut builds, metadata);
+    } else {
+        // Normal path: detect aliases, sort, find historical, resolve commits
+        detect_aliases(&mut builds);
+        sort_by_dependency_order(&mut builds);
+
+        // Discover historical builds from the nix DB
+        let historical = find_historical_builds(&nix, &builds);
+        if !historical.is_empty() {
+            tracing::info!(count = historical.len(), "Found historical builds in store");
+            let base_id = builds.len() as u64;
+            for (i, mut hbuild) in historical.into_iter().enumerate() {
+                hbuild.id = base_id + (i as u64) + 1;
+                builds.push(hbuild);
+            }
+            resolve_historical_commits(&nix, &mut builds, metadata);
+        }
     }
 
     enrich_build_durations(&mut builds);
 
     Ok(builds)
+}
+
+/// Detect alias builds in the normal evaluation path.
+///
+/// When `packages.default` and `packages.susui` share the same `drv_path`,
+/// mark `default` as an alias.
+fn detect_aliases(builds: &mut [Build]) {
+    use std::collections::HashMap;
+
+    // Build map of drv_path → list of indices
+    let mut drv_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, build) in builds.iter().enumerate() {
+        if let Some(ref drv) = build.drv_path {
+            drv_to_indices.entry(drv.clone()).or_default().push(i);
+        }
+    }
+
+    // For groups sharing the same drv_path, mark "default" entries as aliases
+    for indices in drv_to_indices.values() {
+        if indices.len() < 2 {
+            continue;
+        }
+        let has_non_default = indices.iter().any(|&i| {
+            builds[i]
+                .derivation
+                .split('.')
+                .next_back()
+                .unwrap_or("")
+                != "default"
+        });
+        if !has_non_default {
+            continue;
+        }
+        for &i in indices {
+            let leaf = builds[i].derivation.split('.').next_back().unwrap_or("");
+            if leaf == "default" {
+                builds[i].is_alias = true;
+            }
+        }
+    }
 }
 
 /// Enrich builds with real durations from the Nix SQLite database.
@@ -2033,7 +2345,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                 duration: "1s".into(), time: "now".into(), branch: None,
                 commit: "abc".into(), owner: None, repo: None, forge_url: None,
                 flake_ref: ".".into(), pr: None, override_inputs: vec![], log: vec![],
-                drv_path: None, store_path: None, in_store: true, historical: false, dirty: false,
+                drv_path: None, store_path: None, in_store: true, historical: false, dirty: false, is_alias: false,
             },
             Build {
                 id: 2, derivation: "b".into(), status: BuildStatus::Failed,
@@ -2046,7 +2358,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                     git_ref: Some("main".into()), pr: None,
                 }],
                 log: vec![],
-                drv_path: None, store_path: None, in_store: false, historical: false, dirty: false,
+                drv_path: None, store_path: None, in_store: false, historical: false, dirty: false, is_alias: false,
             },
         ];
         let stats = BuildStats::from_builds(&builds);
@@ -2079,6 +2391,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
             in_store: false,
             historical: false,
             dirty: false,
+            is_alias: false,
         }
     }
 

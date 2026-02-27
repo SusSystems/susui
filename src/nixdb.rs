@@ -106,3 +106,114 @@ fn lookup_inner(
         by_drv_path,
     })
 }
+
+/// Find all `.drv` store paths whose derivation name matches any of the given patterns.
+///
+/// Each pattern is a derivation name (e.g. `"susui-0.1.0"`). The function searches
+/// for store paths matching `/nix/store/%-<name>.drv`.
+///
+/// Returns `Vec<(drv_path, drv_name, drv_hash)>` where:
+/// - `drv_path` is the full `/nix/store/...` path
+/// - `drv_name` is the derivation name (e.g. `"susui-0.1.0"`)
+/// - `drv_hash` is the 32-char nix hash prefix
+pub fn find_drvs_by_name(name_patterns: &[String]) -> Vec<(String, String, String)> {
+    match find_drvs_by_name_inner(name_patterns) {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::debug!("nixdb: failed to query drvs by name: {}", e);
+            Vec::new()
+        }
+    }
+}
+
+fn find_drvs_by_name_inner(
+    name_patterns: &[String],
+) -> Result<Vec<(String, String, String)>, rusqlite::Error> {
+    if name_patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = Connection::open_with_flags(
+        NIX_DB_PATH,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let mut results = Vec::new();
+
+    for pattern in name_patterns {
+        let like_pattern = format!("/nix/store/%-{}.drv", pattern);
+        let mut stmt = conn.prepare(
+            "SELECT path FROM ValidPaths WHERE path LIKE ?",
+        )?;
+        let rows = stmt.query_map([&like_pattern], |row| row.get::<_, String>(0))?;
+
+        for path in rows.flatten() {
+            // Parse: /nix/store/<32-char-hash>-<name>.drv
+            let fname = path.split('/').next_back().unwrap_or("");
+            if fname.len() > 33 && fname.as_bytes()[32] == b'-' {
+                let hash = fname[..32].to_string();
+                let name = fname[33..].trim_end_matches(".drv").to_string();
+                results.push((path, name, hash));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Find all output store paths derived from the given `.drv` paths.
+///
+/// Returns a map of `drv_path → Vec<(output_path, registration_time)>`.
+pub fn find_outputs_for_drvs(drv_paths: &[String]) -> HashMap<String, Vec<(String, i64)>> {
+    match find_outputs_for_drvs_inner(drv_paths) {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::debug!("nixdb: failed to query outputs for drvs: {}", e);
+            HashMap::new()
+        }
+    }
+}
+
+fn find_outputs_for_drvs_inner(
+    drv_paths: &[String],
+) -> Result<HashMap<String, Vec<(String, i64)>>, rusqlite::Error> {
+    if drv_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let conn = Connection::open_with_flags(
+        NIX_DB_PATH,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let mut results: HashMap<String, Vec<(String, i64)>> = HashMap::new();
+
+    // Query in batches to avoid huge IN clauses
+    for chunk in drv_paths.chunks(100) {
+        let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT deriver, path, registrationTime FROM ValidPaths \
+             WHERE deriver IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+
+        for row in rows.flatten() {
+            let (deriver, path, reg_time) = row;
+            results.entry(deriver).or_default().push((path, reg_time));
+        }
+    }
+
+    Ok(results)
+}

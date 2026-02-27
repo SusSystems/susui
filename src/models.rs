@@ -93,6 +93,9 @@ pub struct Build {
     /// Whether the git working tree was dirty when this build was evaluated
     #[serde(default)]
     pub dirty: bool,
+    /// Whether this build is an alias for another attribute (e.g., packages.default → packages.susui)
+    #[serde(default)]
+    pub is_alias: bool,
 }
 
 /// Summary stats for the dashboard

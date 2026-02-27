@@ -265,14 +265,16 @@ fn cmd_scan(
                 String::new()
             };
             let store_mark = if build.in_store { "" } else { " ◌" };
+            let alias_mark = if build.is_alias { " ≡" } else { "" };
             println!(
-                "│  {} {} {} {}{}{}",
+                "│  {} {} {} {}{}{}{}",
                 icon,
                 build.status,
                 truncate(&build.derivation, 35),
                 build.duration,
                 ov_mark,
-                store_mark
+                store_mark,
+                alias_mark
             );
         }
         println!("╰───────────────────────────────────────────────╯");
