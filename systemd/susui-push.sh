@@ -50,9 +50,22 @@ else
     cd "$SUSUI_WORKING_DIR"
 fi
 
+# Build --override-input flags from SUSUI_OVERRIDE_INPUTS env var
+# Format: "name=uri name2=uri2"
+OVERRIDE_FLAGS=()
+if [ -n "${SUSUI_OVERRIDE_INPUTS:-}" ]; then
+    for pair in $SUSUI_OVERRIDE_INPUTS; do
+        name="${pair%%=*}"
+        uri="${pair#*=}"
+        if [ -n "$name" ] && [ -n "$uri" ] && [ "$name" != "$uri" ]; then
+            OVERRIDE_FLAGS+=(--override-input "$name" "$uri")
+        fi
+    done
+fi
+
 # Scan and hash the current build state
 # scan may exit non-zero when some derivations fail to build — that's expected
-CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" --json || true)
+CURRENT_HASH=$("$SUSUI_BIN" scan "$SUSUI_FLAKE_REF" "${OVERRIDE_FLAGS[@]}" --json || true)
 CURRENT_HASH=$(echo "$CURRENT_HASH" | sha256sum | cut -d' ' -f1)
 
 # Compare to cached hash
@@ -66,10 +79,10 @@ echo "Build state changed, pushing..."
 PUSH_OK=true
 
 # Push commit status
-"$SUSUI_BIN" push-status "$SUSUI_FLAKE_REF" || { echo "warning: push-status failed"; PUSH_OK=false; }
+"$SUSUI_BIN" push-status "$SUSUI_FLAKE_REF" "${OVERRIDE_FLAGS[@]}" || { echo "warning: push-status failed"; PUSH_OK=false; }
 
 # Push dashboard
-"$SUSUI_BIN" push-dashboard "$SUSUI_FLAKE_REF" || { echo "warning: push-dashboard failed"; PUSH_OK=false; }
+"$SUSUI_BIN" push-dashboard "$SUSUI_FLAKE_REF" "${OVERRIDE_FLAGS[@]}" || { echo "warning: push-dashboard failed"; PUSH_OK=false; }
 
 # Only cache the hash when all pushes succeeded, so failed pushes are retried
 if $PUSH_OK; then

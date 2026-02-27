@@ -1047,7 +1047,7 @@ function App() {
               onMouseLeave=${e => e.currentTarget.style.background = "transparent"}>
               <span style=${{ fontFamily: T.font.mono, fontSize: 10, color: T.color.hint, transform: historyExpanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 150ms ease", display: "inline-block" }}>›</span>
               <span style=${{ fontSize: 10, fontFamily: T.font.mono, fontWeight: 600, color: T.color.hint, letterSpacing: "0.06em", textTransform: "uppercase" }}>Build History</span>
-              <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary }}>${cnt.historical} prior build${cnt.historical !== 1 ? "s" : ""} in store</span>
+              <span style=${{ fontSize: 10, fontFamily: T.font.mono, color: T.color.textTertiary }}>${cnt.historical} prior build${cnt.historical !== 1 ? "s" : ""}</span>
               <div style=${{ flex: 1, height: 1, background: T.color.border }} />
             </div>
           `}

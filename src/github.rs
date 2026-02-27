@@ -279,6 +279,129 @@ pub fn extract_input_revisions(
     map
 }
 
+// ── Build merging for multi-push accumulation ───────────────────────
+
+/// Fetch existing builds from a deployed GitHub Pages dashboard.
+///
+/// Uses the GitHub Contents API to read `api/builds.json` from the target branch.
+/// Returns an empty Vec on any error (graceful first-push behavior).
+pub async fn fetch_existing_builds(target: &DashboardPushTarget) -> Vec<crate::models::Build> {
+    let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        return vec![];
+    }
+
+    let owner = dashboard_owner(target);
+    let host = target.host.as_deref();
+    let api_base = if let Some(h) = host {
+        format!("https://{}/api/v3", h)
+    } else {
+        "https://api.github.com".to_string()
+    };
+
+    let url = format!(
+        "{}/repos/{}/{}/contents/api/builds.json?ref={}",
+        api_base, owner, target.repo, target.branch
+    );
+
+    let client = reqwest::Client::new();
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/vnd.github.raw+json")
+        .header("User-Agent", "susui/0.1")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to fetch existing builds (may be first push)");
+            return vec![];
+        }
+    };
+
+    if !resp.status().is_success() {
+        tracing::debug!(status = %resp.status(), "No existing builds found (may be first push)");
+        return vec![];
+    }
+
+    let body = match resp.text().await {
+        Ok(b) => b,
+        Err(_) => return vec![],
+    };
+
+    // The file contains an ApiResponse<Vec<Build>>
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        data: Vec<crate::models::Build>,
+    }
+
+    match serde_json::from_str::<Wrapper>(&body) {
+        Ok(w) => {
+            tracing::info!(count = w.data.len(), "Fetched existing builds from dashboard");
+            w.data
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "Failed to parse existing builds");
+            vec![]
+        }
+    }
+}
+
+/// Merge new builds with existing builds, deduplicating by derivation + commit.
+///
+/// New builds replace matching keys (fresher data); unmatched existing builds are kept.
+/// Builds are reassigned sequential IDs and truncated to `max_builds`.
+pub fn merge_builds(
+    existing: Vec<crate::models::Build>,
+    new_builds: Vec<crate::models::Build>,
+    max_builds: usize,
+) -> Vec<crate::models::Build> {
+    use std::collections::HashMap;
+
+    // Key: "derivation|commit" → Build
+    let mut by_key: HashMap<String, crate::models::Build> = HashMap::new();
+    // Track insertion order for stable output
+    let mut key_order: Vec<String> = Vec::new();
+
+    // Insert existing builds first
+    for build in existing {
+        let key = format!("{}|{}", build.derivation, build.commit);
+        if !by_key.contains_key(&key) {
+            key_order.push(key.clone());
+        }
+        by_key.insert(key, build);
+    }
+
+    // New builds overwrite matching keys (fresher data)
+    for build in new_builds {
+        let key = format!("{}|{}", build.derivation, build.commit);
+        if !by_key.contains_key(&key) {
+            key_order.push(key.clone());
+        }
+        by_key.insert(key, build);
+    }
+
+    // Collect in insertion order, with new builds' keys appearing at the end
+    let mut merged: Vec<crate::models::Build> = key_order
+        .into_iter()
+        .filter_map(|k| by_key.remove(&k))
+        .collect();
+
+    // Truncate to max_builds
+    if merged.len() > max_builds {
+        // Keep the most recent (tail) builds
+        merged = merged.split_off(merged.len() - max_builds);
+    }
+
+    // Reassign sequential IDs
+    for (i, build) in merged.iter_mut().enumerate() {
+        build.id = (i + 1) as u64;
+    }
+
+    merged
+}
+
 // ── Git-based dashboard push ────────────────────────────────────────
 
 /// Result of a dashboard push

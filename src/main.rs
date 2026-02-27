@@ -28,6 +28,13 @@ struct Cli {
     config: Option<String>,
 }
 
+/// Parse a flat list of strings into pairs: ["a", "b", "c", "d"] → [("a","b"), ("c","d")]
+fn parse_override_inputs(raw: &[String]) -> Vec<(String, String)> {
+    raw.chunks_exact(2)
+        .map(|pair| (pair[0].clone(), pair[1].clone()))
+        .collect()
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Scan a nix flake and display build information (evaluation only, no builds triggered)
@@ -39,6 +46,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 
     /// Start the web dashboard (read-only, no builds triggered)
@@ -54,6 +65,10 @@ enum Commands {
         /// Bind address
         #[arg(long, default_value = "127.0.0.1")]
         bind: String,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 
     /// Generate a static HTML dashboard for GitHub Pages (no builds triggered)
@@ -69,6 +84,10 @@ enum Commands {
         /// Base path for GitHub Pages (e.g. "/susui" for project pages)
         #[arg(long, default_value = "/")]
         base_path: String,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 
     /// Show flake metadata and inputs
@@ -80,6 +99,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 
     /// Push build status to GitHub using nix store context (no builds triggered)
@@ -91,6 +114,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 
     /// Generate dashboard and push to a GitHub repo via Git Data API
@@ -106,6 +133,10 @@ enum Commands {
         /// Base path for the dashboard (e.g. "/" or "/susui")
         #[arg(long, default_value = "/")]
         base_path: String,
+
+        /// Override a flake input (repeatable): --override-input NAME URI
+        #[arg(long = "override-input", num_args = 2, action = clap::ArgAction::Append)]
+        override_input: Vec<String>,
     },
 }
 
@@ -114,6 +145,7 @@ struct AppState {
     builds: Arc<Mutex<Vec<Build>>>,
     metadata: Arc<Mutex<Option<FlakeMetadata>>>,
     flake_ref: String,
+    overrides: Vec<(String, String)>,
 }
 
 #[tokio::main]
@@ -133,32 +165,55 @@ async fn main() -> Result<()> {
         Commands::Scan {
             flake_ref,
             json,
-        } => cmd_scan(&flake_ref, json, &cfg),
+            override_input,
+        } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_scan(&flake_ref, json, &cfg, &overrides)
+        }
 
         Commands::Serve {
             flake_ref,
             port,
             bind,
-        } => cmd_serve(&flake_ref, port, &bind).await,
+            override_input,
+        } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_serve(&flake_ref, port, &bind, &overrides).await
+        }
 
         Commands::Generate {
             flake_ref,
             output,
             base_path,
-        } => cmd_generate(&flake_ref, &output, &base_path, &cfg),
+            override_input,
+        } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_generate(&flake_ref, &output, &base_path, &cfg, &overrides)
+        }
 
-        Commands::Info { flake_ref, json } => cmd_info(&flake_ref, json),
+        Commands::Info { flake_ref, json, override_input } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_info(&flake_ref, json, &overrides)
+        }
 
         Commands::PushStatus {
             flake_ref,
             json,
-        } => cmd_push_status(&flake_ref, json, &cfg).await,
+            override_input,
+        } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_push_status(&flake_ref, json, &cfg, &overrides).await
+        }
 
         Commands::PushDashboard {
             flake_ref,
             json,
             base_path,
-        } => cmd_push_dashboard(&flake_ref, json, &base_path, &cfg).await,
+            override_input,
+        } => {
+            let overrides = parse_override_inputs(&override_input);
+            cmd_push_dashboard(&flake_ref, json, &base_path, &cfg, &overrides).await
+        }
     }
 }
 
@@ -166,8 +221,9 @@ fn cmd_scan(
     flake_ref: &str,
     json_output: bool,
     _cfg: &config::Config,
+    overrides: &[(String, String)],
 ) -> Result<()> {
-    let (metadata, builds) = collector::collect_all(flake_ref)?;
+    let (metadata, builds) = collector::collect_all(flake_ref, overrides)?;
     let stats = BuildStats::from_builds(&builds);
 
     if json_output {
@@ -228,10 +284,10 @@ fn cmd_scan(
     Ok(())
 }
 
-async fn cmd_serve(flake_ref: &str, port: u16, bind: &str) -> Result<()> {
+async fn cmd_serve(flake_ref: &str, port: u16, bind: &str, overrides: &[(String, String)]) -> Result<()> {
     tracing::info!(flake_ref, port, "Starting sus ui dashboard");
 
-    let (metadata, builds) = match collector::collect_all(flake_ref) {
+    let (metadata, builds) = match collector::collect_all(flake_ref, overrides) {
         Ok(data) => data,
         Err(e) => {
             tracing::warn!("Initial scan failed: {}. Starting with empty data.", e);
@@ -252,6 +308,7 @@ async fn cmd_serve(flake_ref: &str, port: u16, bind: &str) -> Result<()> {
         builds: Arc::new(Mutex::new(builds)),
         metadata: Arc::new(Mutex::new(Some(metadata))),
         flake_ref: flake_ref.to_string(),
+        overrides: overrides.to_vec(),
     };
 
     let app = Router::new()
@@ -283,10 +340,11 @@ fn cmd_generate(
     output_dir: &str,
     base_path: &str,
     _cfg: &config::Config,
+    overrides: &[(String, String)],
 ) -> Result<()> {
     tracing::info!(flake_ref, output_dir, "Generating static dashboard");
 
-    let (metadata, builds) = collector::collect_all(flake_ref)?;
+    let (metadata, builds) = collector::collect_all(flake_ref, overrides)?;
     let stats = BuildStats::from_builds(&builds);
 
     let builds_json = serde_json::to_string(&builds)?;
@@ -355,6 +413,7 @@ async fn cmd_push_status(
     flake_ref: &str,
     json_output: bool,
     cfg: &config::Config,
+    overrides: &[(String, String)],
 ) -> Result<()> {
     if cfg.status_push.is_empty() {
         anyhow::bail!(
@@ -370,7 +429,7 @@ async fn cmd_push_status(
         );
     }
 
-    let (metadata, builds) = collector::collect_all(flake_ref)?;
+    let (metadata, builds) = collector::collect_all(flake_ref, overrides)?;
     let revisions = github::extract_input_revisions(&metadata.inputs);
 
     let results = github::push_status(&cfg.status_push, &builds, &revisions).await;
@@ -401,6 +460,7 @@ async fn cmd_push_dashboard(
     json_output: bool,
     base_path: &str,
     cfg: &config::Config,
+    overrides: &[(String, String)],
 ) -> Result<()> {
     let target = match &cfg.dashboard_push {
         Some(t) => t,
@@ -419,7 +479,13 @@ async fn cmd_push_dashboard(
     };
 
     tracing::info!(flake_ref, "Generating dashboard for push");
-    let (metadata, builds) = collector::collect_all(flake_ref)?;
+    let (metadata, new_builds) = collector::collect_all(flake_ref, overrides)?;
+
+    // Merge with existing builds from the deployed dashboard
+    let existing = github::fetch_existing_builds(target).await;
+    let max_builds = target.max_builds.unwrap_or(500);
+    let builds = github::merge_builds(existing, new_builds, max_builds);
+
     let stats = BuildStats::from_builds(&builds);
 
     let builds_json = serde_json::to_string(&builds)?;
@@ -511,7 +577,7 @@ async fn api_metadata(
 
 async fn api_refresh(State(state): State<AppState>) -> Json<ApiResponse<BuildStats>> {
     tracing::info!("Refreshing build data");
-    match collector::collect_all(&state.flake_ref) {
+    match collector::collect_all(&state.flake_ref, &state.overrides) {
         Ok((meta, builds)) => {
             let stats = BuildStats::from_builds(&builds);
             *state.builds.lock().unwrap() = builds;
@@ -526,8 +592,8 @@ async fn api_refresh(State(state): State<AppState>) -> Json<ApiResponse<BuildSta
     }
 }
 
-fn cmd_info(flake_ref: &str, json_output: bool) -> Result<()> {
-    let metadata = collector::collect_flake_metadata(flake_ref)?;
+fn cmd_info(flake_ref: &str, json_output: bool, overrides: &[(String, String)]) -> Result<()> {
+    let metadata = collector::collect_flake_metadata(flake_ref, overrides)?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(&metadata)?);

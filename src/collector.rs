@@ -79,11 +79,9 @@ fn git_dir_from_flake_ref(flake_ref: &str) -> Option<String> {
     } else if let Some(rest) = flake_ref.strip_prefix("git+file://") {
         // git+file:///absolute → /absolute
         Some(rest.to_string())
-    } else if let Some(rest) = flake_ref.strip_prefix("git+file:") {
-        // git+file:./relative → ./relative
-        Some(rest.to_string())
     } else {
-        None
+        // git+file:./relative → ./relative
+        flake_ref.strip_prefix("git+file:").map(|rest| rest.to_string())
     }
 }
 
@@ -194,8 +192,7 @@ fn parse_git_url(raw_url: &str) -> (Option<String>, Option<String>, Option<Strin
     }
 
     // git@HOST:owner/repo.git
-    if url.starts_with("git@") {
-        let after_at = &url[4..];
+    if let Some(after_at) = url.strip_prefix("git@") {
         if let Some(colon_pos) = after_at.find(':') {
             let host = &after_at[..colon_pos];
             let path = after_at[colon_pos + 1..].trim_end_matches(".git").trim_end_matches('/');
@@ -402,8 +399,10 @@ fn parse_flake_metadata(json_str: &str) -> Result<FlakeMetadata> {
 }
 
 /// List flake outputs as attribute paths
-fn list_flake_outputs(nix: &str, flake_ref: &str) -> Result<Vec<String>> {
-    let output = run_cmd(nix, &["flake", "show", flake_ref, "--json", "--no-write-lock-file"])?;
+fn list_flake_outputs(nix: &str, flake_ref: &str, overrides: &[(String, String)]) -> Result<Vec<String>> {
+    let mut args = vec!["flake", "show", flake_ref, "--json", "--no-write-lock-file"];
+    append_override_args(&mut args, overrides);
+    let output = run_cmd(nix, &args)?;
     let v: serde_json::Value = serde_json::from_str(&output)?;
 
     let mut attrs = Vec::new();
@@ -432,9 +431,11 @@ fn collect_attrs(val: &serde_json::Value, prefix: &str, out: &mut Vec<String>) {
 }
 
 /// Collect flake metadata for a given flake reference
-pub fn collect_flake_metadata(flake_ref: &str) -> Result<FlakeMetadata> {
+pub fn collect_flake_metadata(flake_ref: &str, overrides: &[(String, String)]) -> Result<FlakeMetadata> {
     let nix = nix_bin();
-    let output = run_cmd(&nix, &["flake", "metadata", flake_ref, "--json", "--no-write-lock-file"])?;
+    let mut args = vec!["flake", "metadata", flake_ref, "--json", "--no-write-lock-file"];
+    append_override_args(&mut args, overrides);
+    let output = run_cmd(&nix, &args)?;
     parse_flake_metadata(&output)
 }
 
@@ -537,12 +538,15 @@ fn build_derivation(
 ///   - Output in store → Passed (previously built successfully)
 ///   - Output NOT in store, eval succeeded → Unknown (not yet built)
 ///   - Eval failed → Failed
-fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitInfo) -> Build {
+fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], id: u64, git_info: &ResolvedGitInfo) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
 
+    let mut args = vec!["path-info", "--derivation", &target];
+    append_override_args(&mut args, overrides);
+
     let start = Instant::now();
-    let (success, stdout, stderr) = run_cmd_full(&nix, &["path-info", "--derivation", &target]);
+    let (success, stdout, stderr) = run_cmd_full(&nix, &args);
     let elapsed = start.elapsed();
 
     let duration = format_duration(elapsed);
@@ -565,6 +569,20 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
         // Evaluation itself failed — show the filtered error output
         let combined = format!("{}{}", stdout, stderr);
         let log_lines = make_log_lines(&combined);
+        let override_inputs: Vec<OverrideInput> = overrides
+            .iter()
+            .map(|(name, uri)| {
+                let (input_type, ov_owner, ov_repo, git_ref) = parse_flake_uri(uri);
+                OverrideInput {
+                    input_name: name.clone(),
+                    input_type,
+                    owner: ov_owner,
+                    repo: ov_repo,
+                    git_ref,
+                    pr: None,
+                }
+            })
+            .collect();
         return Build {
             id,
             derivation: attr.to_string(),
@@ -578,7 +596,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
             forge_url,
             flake_ref: flake_ref.to_string(),
             pr: None,
-            override_inputs: vec![],
+            override_inputs,
             log: log_lines,
             drv_path: None,
             store_path: None,
@@ -589,7 +607,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
     }
 
     // Check if the output path exists in the store
-    let (store_path, in_store) = check_output_in_store(&nix, &target, &drv_path);
+    let (store_path, in_store) = check_output_in_store(&nix, &target, &drv_path, overrides);
 
     // Retrieve logs with multiple strategies
     let (log_lines, has_build_log) = enrich_eval_logs(&nix, &target, &drv_path, store_path.as_deref());
@@ -604,6 +622,21 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
         BuildStatus::Unknown
     };
 
+    let override_inputs: Vec<OverrideInput> = overrides
+        .iter()
+        .map(|(name, uri)| {
+            let (input_type, ov_owner, ov_repo, git_ref) = parse_flake_uri(uri);
+            OverrideInput {
+                input_name: name.clone(),
+                input_type,
+                owner: ov_owner,
+                repo: ov_repo,
+                git_ref,
+                pr: None,
+            }
+        })
+        .collect();
+
     Build {
         id,
         derivation: attr.to_string(),
@@ -617,7 +650,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
         forge_url,
         flake_ref: flake_ref.to_string(),
         pr: None,
-        override_inputs: vec![],
+        override_inputs,
         log: log_lines,
         drv_path: Some(drv_path),
         store_path,
@@ -629,9 +662,11 @@ fn eval_derivation(flake_ref: &str, attr: &str, id: u64, git_info: &ResolvedGitI
 
 /// Check whether a derivation's output path exists in the nix store.
 /// Returns (store_path, exists).
-fn check_output_in_store(nix: &str, target: &str, _drv_path: &str) -> (Option<String>, bool) {
+fn check_output_in_store(nix: &str, target: &str, _drv_path: &str, overrides: &[(String, String)]) -> (Option<String>, bool) {
     // Strategy 1: `nix path-info <target>` — asks for the output, not the .drv
-    let (ok, stdout, _) = run_cmd_full(nix, &["path-info", target]);
+    let mut pi_args = vec!["path-info", target];
+    append_override_args(&mut pi_args, overrides);
+    let (ok, stdout, _) = run_cmd_full(nix, &pi_args);
     if ok {
         let path = stdout.trim().to_string();
         if !path.is_empty() && path.starts_with("/nix/store/") && !path.ends_with(".drv") {
@@ -1244,8 +1279,9 @@ fn derivation_info_lines(nix: &str, target: &str, drv_path: &str) -> Vec<LogLine
 }
 
 /// Discover historical builds by scanning `/nix/store/` for prior `.drv` files
-/// that share the same derivation name as current builds. Only includes those
-/// whose output is still present in the nix store.
+/// that share the same derivation name as current builds. Includes passed builds
+/// (output in store), failed builds (build log exists), and unknown builds
+/// (evaluation succeeded but not yet built or in progress).
 ///
 /// This directly scans the store instead of relying on build logs in
 /// `/nix/var/log/nix/drvs/`, which makes it more reliable — it catches builds
@@ -1381,9 +1417,6 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                 } else {
                     false
                 };
-                if !log_exists {
-                    continue; // No output and no log — truly unknown, skip
-                }
                 // Use the drv file's mtime as a rough timestamp
                 let time_str = std::fs::metadata(&old_drv_path)
                     .ok()
@@ -1393,7 +1426,11 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                         format_duration_ago(elapsed)
                     })
                     .unwrap_or_else(|| "unknown".to_string());
-                (BuildStatus::Failed, None, false, time_str)
+                if log_exists {
+                    (BuildStatus::Failed, None, false, time_str)
+                } else {
+                    (BuildStatus::Unknown, None, false, time_str)
+                }
             };
 
             // Retrieve build log
@@ -1635,13 +1672,13 @@ fn format_duration_ago(d: std::time::Duration) -> String {
 }
 
 /// Scan a flake and return builds for all discovered outputs (evaluation only, no builds triggered)
-fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata) -> Result<Vec<Build>> {
+fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, String)]) -> Result<Vec<Build>> {
     let nix = nix_bin();
     tracing::info!(flake_ref, "Scanning flake outputs");
 
     let git_info = resolve_git_info(flake_ref, metadata);
 
-    let outputs = list_flake_outputs(&nix, flake_ref)
+    let outputs = list_flake_outputs(&nix, flake_ref, overrides)
         .with_context(|| format!("Failed to list outputs for {}", flake_ref))?;
 
     tracing::info!(count = outputs.len(), "Found flake outputs");
@@ -1649,7 +1686,7 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata) -> Result<Vec<Build>> {
     let mut builds = Vec::new();
     for (i, attr) in outputs.iter().enumerate() {
         tracing::info!(attr, "Processing derivation");
-        let build = eval_derivation(flake_ref, attr, (i + 1) as u64, &git_info);
+        let build = eval_derivation(flake_ref, attr, overrides, (i + 1) as u64, &git_info);
         builds.push(build);
     }
 
@@ -1774,10 +1811,19 @@ fn sort_by_dependency_order(builds: &mut [Build]) {
     }
 }
 
+/// Append `--override-input NAME URI` arguments to a command argument list.
+fn append_override_args<'a>(args: &mut Vec<&'a str>, overrides: &'a [(String, String)]) {
+    for (name, uri) in overrides {
+        args.push("--override-input");
+        args.push(name.as_str());
+        args.push(uri.as_str());
+    }
+}
+
 /// Collect all data for a flake: metadata + builds (evaluation only, no builds triggered)
-pub fn collect_all(flake_ref: &str) -> Result<(FlakeMetadata, Vec<Build>)> {
-    let metadata = collect_flake_metadata(flake_ref)?;
-    let builds = scan_flake(flake_ref, &metadata)?;
+pub fn collect_all(flake_ref: &str, overrides: &[(String, String)]) -> Result<(FlakeMetadata, Vec<Build>)> {
+    let metadata = collect_flake_metadata(flake_ref, overrides)?;
+    let builds = scan_flake(flake_ref, &metadata, overrides)?;
     Ok((metadata, builds))
 }
 

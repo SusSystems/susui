@@ -64,11 +64,9 @@ fn lookup_inner(
         let rows = stmt.query_map(params.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
-        for row in rows {
-            if let Ok((path, dur)) = row {
-                if dur > 0 {
-                    by_store_path.insert(path, dur as u64);
-                }
+        for (path, dur) in rows.flatten() {
+            if dur > 0 {
+                by_store_path.insert(path, dur as u64);
             }
         }
     }
@@ -92,14 +90,12 @@ fn lookup_inner(
         let rows = stmt.query_map(params.as_slice(), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })?;
-        for row in rows {
-            if let Ok((deriver, dur)) = row {
-                if dur > 0 {
-                    // Use max duration across outputs (a drv can have multiple outputs)
-                    let entry = by_drv_path.entry(deriver).or_insert(0);
-                    if dur as u64 > *entry {
-                        *entry = dur as u64;
-                    }
+        for (deriver, dur) in rows.flatten() {
+            if dur > 0 {
+                // Use max duration across outputs (a drv can have multiple outputs)
+                let entry = by_drv_path.entry(deriver).or_insert(0);
+                if dur as u64 > *entry {
+                    *entry = dur as u64;
                 }
             }
         }

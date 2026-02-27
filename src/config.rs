@@ -101,6 +101,9 @@ pub struct DashboardPushTarget {
     /// Custom commit message
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_message: Option<String>,
+    /// Maximum number of builds to keep when merging across pushes
+    #[serde(default)]
+    pub max_builds: Option<usize>,
 }
 
 fn default_dashboard_branch() -> String {
