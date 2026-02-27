@@ -69,6 +69,24 @@ fn run_cmd_full(cmd: &str, args: &[&str]) -> (bool, String, String) {
     }
 }
 
+/// Extract local git directory from a flake ref.
+/// Returns None for remote flake refs (github:, git+ssh://, etc.)
+fn git_dir_from_flake_ref(flake_ref: &str) -> Option<String> {
+    if flake_ref == "." || flake_ref.starts_with("./") || flake_ref.starts_with('/') {
+        Some(flake_ref.to_string())
+    } else if let Some(rest) = flake_ref.strip_prefix("path:") {
+        Some(rest.to_string())
+    } else if let Some(rest) = flake_ref.strip_prefix("git+file://") {
+        // git+file:///absolute → /absolute
+        Some(rest.to_string())
+    } else if let Some(rest) = flake_ref.strip_prefix("git+file:") {
+        // git+file:./relative → ./relative
+        Some(rest.to_string())
+    } else {
+        None
+    }
+}
+
 /// Get the current git branch in a directory
 fn git_branch(dir: &str) -> Option<String> {
     run_cmd("git", &["-C", dir, "branch", "--show-current"])
@@ -381,11 +399,7 @@ pub fn build_derivation(
     let log_lines = make_log_lines(&combined_output);
 
     // Get git info from the working directory
-    let dir = if flake_ref == "." || flake_ref.starts_with("./") || flake_ref.starts_with('/') {
-        flake_ref.trim_start_matches("./").to_string()
-    } else {
-        ".".to_string()
-    };
+    let dir = git_dir_from_flake_ref(flake_ref).unwrap_or_else(|| ".".into());
 
     let branch = git_branch(&dir);
     let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
@@ -460,11 +474,7 @@ pub fn eval_derivation(flake_ref: &str, attr: &str, id: u64) -> Build {
     // The derivation store path is the meaningful output
     let drv_path = stdout.trim().to_string();
 
-    let dir = if flake_ref.starts_with('.') || flake_ref.starts_with('/') {
-        flake_ref.to_string()
-    } else {
-        ".".to_string()
-    };
+    let dir = git_dir_from_flake_ref(flake_ref).unwrap_or_else(|| ".".into());
 
     let branch = git_branch(&dir);
     let commit = git_commit(&dir).unwrap_or_else(|| "0".repeat(40));
@@ -899,11 +909,7 @@ fn try_historical_log(nix: &str, drv_path: &str) -> Option<Vec<LogLine>> {
 fn try_cargo_test_fallback(target: &str) -> Option<Vec<LogLine>> {
     // Extract flake ref from target: ".#checks.x86_64-linux.susui" → "."
     let flake_ref = target.split('#').next().unwrap_or(".");
-    let src_dir = if flake_ref == "." || flake_ref.starts_with("./") || flake_ref.starts_with('/') {
-        flake_ref.to_string()
-    } else {
-        return None; // Remote flake, can't run cargo locally
-    };
+    let src_dir = git_dir_from_flake_ref(flake_ref)?;
 
     let cargo_toml = std::path::Path::new(&src_dir).join("Cargo.toml");
     if !cargo_toml.exists() {
@@ -1397,14 +1403,8 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build]) {
     let dir = builds
         .iter()
         .find(|b| !b.historical)
-        .map(|b| {
-            if b.flake_ref.starts_with('.') || b.flake_ref.starts_with('/') {
-                b.flake_ref.clone()
-            } else {
-                ".".to_string()
-            }
-        })
-        .unwrap_or_else(|| ".".to_string());
+        .and_then(|b| git_dir_from_flake_ref(&b.flake_ref))
+        .unwrap_or_else(|| ".".into());
 
     // Verify it's a git repo
     if git_commit(&dir).is_none() {
@@ -1980,5 +1980,19 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                 "checks.x86_64-linux.fmt",
             ]
         );
+    }
+
+    #[test]
+    fn test_git_dir_from_flake_ref() {
+        assert_eq!(git_dir_from_flake_ref("."), Some(".".into()));
+        assert_eq!(git_dir_from_flake_ref("./my/proj"), Some("./my/proj".into()));
+        assert_eq!(git_dir_from_flake_ref("/abs/path"), Some("/abs/path".into()));
+        assert_eq!(git_dir_from_flake_ref("path:/foo"), Some("/foo".into()));
+        assert_eq!(git_dir_from_flake_ref("path:./rel"), Some("./rel".into()));
+        assert_eq!(git_dir_from_flake_ref("git+file:///home/user/proj"), Some("/home/user/proj".into()));
+        assert_eq!(git_dir_from_flake_ref("git+file:./rel"), Some("./rel".into()));
+        assert_eq!(git_dir_from_flake_ref("github:NixOS/nixpkgs"), None);
+        assert_eq!(git_dir_from_flake_ref("git+ssh://example.com/repo"), None);
+        assert_eq!(git_dir_from_flake_ref("nixpkgs"), None);
     }
 }
