@@ -1482,9 +1482,12 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
     }
 
     // Determine git directory from the first build's flake_ref
+    // Prefer non-historical builds, but fall back to any build (e.g. attr hints path
+    // where all discovered builds are marked historical)
     let local_dir = builds
         .iter()
         .find(|b| !b.historical)
+        .or_else(|| builds.iter().next())
         .and_then(|b| git_dir_from_flake_ref(&b.flake_ref));
 
     // Resolve forge_url/owner/repo — from local git or flake metadata
@@ -1499,41 +1502,84 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
         }
     };
 
-    // For remote refs without local git history, we can't walk git log to match
-    // drv hashes to commits. Populate forge info on historical builds and return.
-    let dir = match local_dir {
-        Some(d) => d,
-        None => {
-            tracing::info!(
-                historical_drvs = drv_hash_to_indices.len(),
-                "Remote flake ref — cannot resolve historical builds to git commits (no local git history)"
-            );
-            // Still populate forge_url/owner/repo so dashboard links work
-            for indices in drv_hash_to_indices.values() {
-                for &idx in indices {
-                    builds[idx].forge_url = forge_url.clone();
-                    builds[idx].owner = owner.clone();
-                    builds[idx].repo = repo.clone();
-                }
+    // Determine commit list and nix ref prefix for path-info queries.
+    // Local refs:  git log from local dir, nix target = git+file:<dir>?rev=<commit>#<attr>
+    // Remote src:  GitHub API for commits, nix target = github:<owner>/<repo>/<commit>#<attr>
+    let populate_forge_info = |builds: &mut [Build], indices_map: &HashMap<String, Vec<usize>>| {
+        for indices in indices_map.values() {
+            for &idx in indices {
+                builds[idx].forge_url = forge_url.clone();
+                builds[idx].owner = owner.clone();
+                builds[idx].repo = repo.clone();
             }
-            return;
         }
     };
-
-    // Verify it's a git repo
-    if git_commit(&dir).is_none() {
-        return;
-    }
 
     // Get unique attribute paths from historical builds
     let attrs: Vec<String> = historical_attrs.into_iter().collect();
 
-    // Get recent commits
-    let (ok, stdout, _) = run_cmd_full("git", &["-C", &dir, "log", "--format=%H", "-200"]);
-    if !ok {
-        return;
-    }
-    let commits: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+    let (commits_owned, nix_ref_prefix): (Vec<String>, String) = if let Some(d) = local_dir {
+        if git_commit(&d).is_none() {
+            return;
+        }
+        let prefix = format!("git+file:{}?rev=", d);
+        let (ok, stdout, _) = run_cmd_full(
+            "git",
+            &["-C", &d, "log", "--format=%H", "--all", "-200"],
+        );
+        if !ok {
+            return;
+        }
+        let commits = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+        (commits, prefix)
+    } else {
+        // Remote ref: use GitHub API to list recent commits from the src input
+        let src = match metadata.inputs.iter().find(|i| i.name == "src") {
+            Some(s) => s,
+            None => {
+                tracing::info!("Remote flake ref with no src input — cannot resolve commits");
+                populate_forge_info(builds, &drv_hash_to_indices);
+                return;
+            }
+        };
+
+        let (src_forge, src_owner, src_repo) = parse_git_url(&src.url);
+        let (src_forge, src_owner, src_repo) = match (src_forge, src_owner, src_repo) {
+            (Some(f), Some(o), Some(r)) => (f, o, r),
+            _ => {
+                tracing::info!(url = src.url, "Cannot parse src input URL for commit resolution");
+                populate_forge_info(builds, &drv_hash_to_indices);
+                return;
+            }
+        };
+
+        let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+        if token.is_empty() {
+            tracing::info!("GITHUB_TOKEN not set — cannot fetch commits for remote src input");
+            populate_forge_info(builds, &drv_hash_to_indices);
+            return;
+        }
+
+        let commits = match fetch_commit_shas(&src_forge, &src_owner, &src_repo, &token, 200) {
+            Some(c) => c,
+            None => {
+                populate_forge_info(builds, &drv_hash_to_indices);
+                return;
+            }
+        };
+
+        // Use the forge host to build the nix ref prefix.
+        // github.com → github:<owner>/<repo>/<sha>#<attr>
+        // GHE hosts  → git+https://<host>/<owner>/<repo>?rev=<sha>#<attr>
+        let prefix = if src_forge == "https://github.com" {
+            format!("github:{}/{}/", src_owner, src_repo)
+        } else {
+            let host = src_forge.strip_prefix("https://").unwrap_or(&src_forge);
+            format!("git+https://{}/{}/{}?rev=", host, src_owner, src_repo)
+        };
+        (commits, prefix)
+    };
+    let commits: Vec<&str> = commits_owned.iter().map(|s| s.as_str()).collect();
 
     // Track which attributes still have unresolved historical builds
     let mut unresolved_attrs: HashSet<String> = attrs.iter().cloned().collect();
@@ -1570,7 +1616,7 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
                 continue;
             }
 
-            let target = format!("git+file:{}?rev={}#{}", dir, commit, attr);
+            let target = format!("{}{}#{}", nix_ref_prefix, commit, attr);
             let (ok, stdout, _) = run_cmd_full(nix, &["path-info", "--derivation", &target]);
 
             let drv_path = stdout.trim().to_string();
@@ -1595,10 +1641,15 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
                     );
 
                     for &idx in indices {
+                        let was_different = builds[idx].commit != *commit;
                         builds[idx].commit = commit.to_string();
                         builds[idx].forge_url = forge_url.clone();
                         builds[idx].owner = owner.clone();
                         builds[idx].repo = repo.clone();
+                        // Mark as "historical" branch if resolved to a different commit
+                        if was_different {
+                            builds[idx].branch = Some("historical".to_string());
+                        }
                     }
 
                     unresolved_hashes.remove(result_hash);
@@ -1622,6 +1673,69 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
             "Some historical builds could not be matched to git commits"
         );
     }
+}
+
+/// Fetch recent commit SHAs from a GitHub-compatible API.
+///
+/// Supports both github.com and GitHub Enterprise (e.g. `https://github.ibm.com`).
+/// Returns `None` on any error (no token, API failure, etc.) so the caller can
+/// fall back gracefully.
+fn fetch_commit_shas(
+    forge_url: &str,
+    owner: &str,
+    repo: &str,
+    token: &str,
+    count: usize,
+) -> Option<Vec<String>> {
+    let api_base = if forge_url == "https://github.com" {
+        "https://api.github.com".to_string()
+    } else {
+        format!("{}/api/v3", forge_url)
+    };
+
+    let url = format!(
+        "{}/repos/{}/{}/commits?per_page={}",
+        api_base, owner, repo, count
+    );
+
+    tracing::info!(url, "Fetching commit history from GitHub API");
+
+    // We're inside a tokio runtime (from #[tokio::main]) but in sync code,
+    // so use block_in_place to allow blocking without panic.
+    let result = tokio::task::block_in_place(|| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(async {
+            let client = reqwest::Client::new();
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("token {}", token))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "susui/0.1")
+                .send()
+                .await
+                .ok()?;
+
+            if !resp.status().is_success() {
+                tracing::info!(
+                    status = %resp.status(),
+                    "GitHub API commits request failed"
+                );
+                return None;
+            }
+
+            let body: Vec<serde_json::Value> = resp.json().await.ok()?;
+            let shas: Vec<String> = body
+                .iter()
+                .filter_map(|obj| obj.get("sha").and_then(|v| v.as_str()).map(String::from))
+                .collect();
+            Some(shas)
+        })
+    });
+
+    if let Some(ref shas) = result {
+        tracing::info!(count = shas.len(), "Fetched commit SHAs from GitHub API");
+    }
+    result
 }
 
 /// Format a duration as a human-readable "ago" string
