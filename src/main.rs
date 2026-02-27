@@ -250,32 +250,83 @@ fn cmd_scan(
         );
         println!("├───────────────────────────────────────────────┤");
 
-        for build in &builds {
-            let icon = match build.status {
-                BuildStatus::Passed => "✓",
-                BuildStatus::Failed => "✕",
-                BuildStatus::Running => "↻",
-                BuildStatus::Pending => "◦",
-                BuildStatus::Skipped => "—",
-                BuildStatus::Unknown => "?",
-            };
-            let ov_mark = if !build.override_inputs.is_empty() {
-                format!(" ⚑{}", build.override_inputs.len())
-            } else {
-                String::new()
-            };
-            let store_mark = if build.in_store { "" } else { " ◌" };
-            let alias_mark = if build.is_alias { " ≡" } else { "" };
-            println!(
-                "│  {} {} {} {}{}{}{}",
-                icon,
-                build.status,
-                truncate(&build.derivation, 35),
-                build.duration,
-                ov_mark,
-                store_mark,
-                alias_mark
+        // Group builds by (commit, branch, flake_ref)
+        let mut groups: Vec<(String, Option<String>, String, Vec<&Build>)> = Vec::new();
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        // Sort: current (non-historical) first, then historical
+        let mut sorted_builds: Vec<&Build> = builds.iter().collect();
+        sorted_builds.sort_by_key(|b| b.historical);
+        for build in &sorted_builds {
+            let key = format!(
+                "{}|{}|{}",
+                build.commit,
+                build.branch.as_deref().unwrap_or(""),
+                build.flake_ref
             );
+            if let Some(&idx) = seen.get(&key) {
+                groups[idx].3.push(build);
+            } else {
+                seen.insert(key.clone(), groups.len());
+                groups.push((
+                    build.commit.clone(),
+                    build.branch.clone(),
+                    build.flake_ref.clone(),
+                    vec![build],
+                ));
+            }
+        }
+
+        for (commit, branch, _flake_ref, group_builds) in &groups {
+            let passed = group_builds.iter().filter(|b| b.status == BuildStatus::Passed).count();
+            let failed = group_builds.iter().filter(|b| b.status == BuildStatus::Failed).count();
+            let running = group_builds.iter().filter(|b| b.status == BuildStatus::Running).count();
+            let unknown = group_builds.iter().filter(|b| b.status == BuildStatus::Unknown).count();
+            let pending = group_builds.iter().filter(|b| b.status == BuildStatus::Pending).count();
+
+            let short_sha = if commit.len() >= 8 { &commit[..8] } else { commit };
+            let branch_str = branch.as_deref().unwrap_or("unknown");
+
+            let mut summary_parts = Vec::new();
+            if passed > 0 { summary_parts.push(format!("{} passed", passed)); }
+            if failed > 0 { summary_parts.push(format!("{} failed", failed)); }
+            if running > 0 { summary_parts.push(format!("{} running", running)); }
+            if pending > 0 { summary_parts.push(format!("{} pending", pending)); }
+            if unknown > 0 { summary_parts.push(format!("{} unknown", unknown)); }
+            let summary = summary_parts.join(", ");
+
+            if commit == "0000000000000000000000000000000000000000" || commit.is_empty() {
+                println!("│  ■ {} (unknown commit) ({})", short_sha, summary);
+            } else {
+                println!("│  ■ {} {} ({})", short_sha, branch_str, summary);
+            }
+
+            for build in group_builds {
+                let icon = match build.status {
+                    BuildStatus::Passed => "✓",
+                    BuildStatus::Failed => "✕",
+                    BuildStatus::Running => "↻",
+                    BuildStatus::Pending => "◦",
+                    BuildStatus::Skipped => "—",
+                    BuildStatus::Unknown => "?",
+                };
+                let ov_mark = if !build.override_inputs.is_empty() {
+                    format!(" ⚑{}", build.override_inputs.len())
+                } else {
+                    String::new()
+                };
+                let store_mark = if build.in_store { "" } else { " ◌" };
+                let alias_mark = if build.is_alias { " ≡" } else { "" };
+                println!(
+                    "│    {} {} {} {}{}{}{}",
+                    icon,
+                    build.status,
+                    truncate(&build.derivation, 33),
+                    build.duration,
+                    ov_mark,
+                    store_mark,
+                    alias_mark
+                );
+            }
         }
         println!("╰───────────────────────────────────────────────╯");
     }

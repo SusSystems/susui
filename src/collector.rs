@@ -1958,6 +1958,7 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, S
                 build.id = (i + 1) as u64;
             }
         }
+        resolve_historical_commits(&nix, &mut builds, metadata);
     } else {
         // Normal path: detect aliases, sort, find historical, resolve commits
         detect_aliases(&mut builds);
