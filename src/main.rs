@@ -300,32 +300,90 @@ fn cmd_scan(
                 println!("│  ■ {} {} ({})", short_sha, branch_str, summary);
             }
 
-            for build in group_builds {
-                let icon = match build.status {
-                    BuildStatus::Passed => "✓",
-                    BuildStatus::Failed => "✕",
-                    BuildStatus::Running => "↻",
-                    BuildStatus::Pending => "◦",
-                    BuildStatus::Skipped => "—",
-                    BuildStatus::Unknown => "?",
-                };
-                let ov_mark = if !build.override_inputs.is_empty() {
-                    format!(" ⚑{}", build.override_inputs.len())
-                } else {
-                    String::new()
-                };
-                let store_mark = if build.in_store { "" } else { " ◌" };
-                let alias_mark = if build.is_alias { " ≡" } else { "" };
-                println!(
-                    "│    {} {} {} {}{}{}{}",
-                    icon,
-                    build.status,
-                    truncate(&build.derivation, 33),
-                    build.duration,
-                    ov_mark,
-                    store_mark,
-                    alias_mark
-                );
+            let has_subgroups = group_builds.iter().any(|b| b.input_group.is_some());
+
+            if has_subgroups {
+                // Sub-group builds by input_group
+                let mut subgroups: Vec<(String, Vec<&&Build>)> = Vec::new();
+                let mut sg_seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                for build in group_builds {
+                    let key = build.input_group.clone().unwrap_or_else(|| "unknown".to_string());
+                    if let Some(&idx) = sg_seen.get(&key) {
+                        subgroups[idx].1.push(build);
+                    } else {
+                        sg_seen.insert(key.clone(), subgroups.len());
+                        subgroups.push((key, vec![build]));
+                    }
+                }
+
+                for (sg_label, sg_builds) in &subgroups {
+                    let sg_passed = sg_builds.iter().filter(|b| b.status == BuildStatus::Passed).count();
+                    let sg_failed = sg_builds.iter().filter(|b| b.status == BuildStatus::Failed).count();
+                    let mut sg_parts = Vec::new();
+                    if sg_passed > 0 { sg_parts.push(format!("{} passed", sg_passed)); }
+                    if sg_failed > 0 { sg_parts.push(format!("{} failed", sg_failed)); }
+                    let sg_other = sg_builds.len() - sg_passed - sg_failed;
+                    if sg_other > 0 { sg_parts.push(format!("{} other", sg_other)); }
+                    let sg_summary = sg_parts.join(", ");
+
+                    println!("│    ┌ [stdenv:{}] ({})", sg_label, sg_summary);
+                    for build in sg_builds {
+                        let icon = match build.status {
+                            BuildStatus::Passed => "✓",
+                            BuildStatus::Failed => "✕",
+                            BuildStatus::Running => "↻",
+                            BuildStatus::Pending => "◦",
+                            BuildStatus::Skipped => "—",
+                            BuildStatus::Unknown => "?",
+                        };
+                        let ov_mark = if !build.override_inputs.is_empty() {
+                            format!(" ⚑{}", build.override_inputs.len())
+                        } else {
+                            String::new()
+                        };
+                        let store_mark = if build.in_store { "" } else { " ◌" };
+                        let alias_mark = if build.is_alias { " ≡" } else { "" };
+                        println!(
+                            "│    │  {} {} {} {}{}{}{}",
+                            icon,
+                            build.status,
+                            truncate(&build.derivation, 30),
+                            build.duration,
+                            ov_mark,
+                            store_mark,
+                            alias_mark
+                        );
+                    }
+                    println!("│    └");
+                }
+            } else {
+                for build in group_builds {
+                    let icon = match build.status {
+                        BuildStatus::Passed => "✓",
+                        BuildStatus::Failed => "✕",
+                        BuildStatus::Running => "↻",
+                        BuildStatus::Pending => "◦",
+                        BuildStatus::Skipped => "—",
+                        BuildStatus::Unknown => "?",
+                    };
+                    let ov_mark = if !build.override_inputs.is_empty() {
+                        format!(" ⚑{}", build.override_inputs.len())
+                    } else {
+                        String::new()
+                    };
+                    let store_mark = if build.in_store { "" } else { " ◌" };
+                    let alias_mark = if build.is_alias { " ≡" } else { "" };
+                    println!(
+                        "│    {} {} {} {}{}{}{}",
+                        icon,
+                        build.status,
+                        truncate(&build.derivation, 33),
+                        build.duration,
+                        ov_mark,
+                        store_mark,
+                        alias_mark
+                    );
+                }
             }
         }
         println!("╰───────────────────────────────────────────────╯");

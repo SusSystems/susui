@@ -725,23 +725,50 @@ function CommitGroup({ commit, branch, owner, repo, forgeUrl, flakeRef, builds, 
         </${DataHint}>
       </div>
       ${(() => {
-        const drvGroups = [];
-        const seen = new Map();
-        for (const b of builds) {
-          const key = b.drvPath || ("__solo_" + b.id);
-          if (!seen.has(key)) {
-            seen.set(key, { primary: b, aliases: [] });
-            drvGroups.push(seen.get(key));
-          } else {
-            seen.get(key).aliases.push(b);
+        const hasInputGroups = builds.some(b => b.inputGroup);
+        const renderBuilds = (blds) => {
+          const drvGroups = [];
+          const seen = new Map();
+          for (const b of blds) {
+            const key = b.drvPath || ("__solo_" + b.id);
+            if (!seen.has(key)) {
+              seen.set(key, { primary: b, aliases: [] });
+              drvGroups.push(seen.get(key));
+            } else {
+              seen.get(key).aliases.push(b);
+            }
           }
+          return drvGroups.map(g => g.aliases.length > 0
+            ? html`<${DrvGroup} key=${g.primary.id} group=${g} expandedBuild=${expandedBuild} onToggle=${onToggle} onFullLog=${onFullLog} historicalByDerivation=${historicalByDerivation} />`
+            : html`<${NixBuildRow} key=${g.primary.id} build=${g.primary} isExpanded=${expandedBuild === g.primary.id}
+                onToggle=${() => onToggle(g.primary.id)} grouped=${true} onFullLog=${onFullLog}
+                priorBuilds=${!g.primary.historical && historicalByDerivation ? historicalByDerivation[g.primary.derivation] : null} />`
+          );
+        };
+        if (!hasInputGroups) return renderBuilds(builds);
+        // Sub-group by inputGroup
+        const subgroupMap = new Map();
+        for (const b of builds) {
+          const key = b.inputGroup || "unknown";
+          if (!subgroupMap.has(key)) subgroupMap.set(key, []);
+          subgroupMap.get(key).push(b);
         }
-        return drvGroups.map(g => g.aliases.length > 0
-          ? html`<${DrvGroup} key=${g.primary.id} group=${g} expandedBuild=${expandedBuild} onToggle=${onToggle} onFullLog=${onFullLog} historicalByDerivation=${historicalByDerivation} />`
-          : html`<${NixBuildRow} key=${g.primary.id} build=${g.primary} isExpanded=${expandedBuild === g.primary.id}
-              onToggle=${() => onToggle(g.primary.id)} grouped=${true} onFullLog=${onFullLog}
-              priorBuilds=${!g.primary.historical && historicalByDerivation ? historicalByDerivation[g.primary.derivation] : null} />`
-        );
+        return Array.from(subgroupMap.entries()).map(([label, sgBuilds]) => {
+          const sgPassed = sgBuilds.filter(b => b.status === "passed").length;
+          const sgFailed = sgBuilds.filter(b => b.status === "failed").length;
+          const sgColor = sgFailed > 0 ? T.color.fail400 : sgPassed === sgBuilds.length ? T.color.pass400 : T.color.textTertiary;
+          return html`
+            <div key=${label} style=${{ marginLeft: 8, marginBottom: 4, borderLeft: "2px solid " + sgColor + "40", paddingLeft: 0 }}>
+              <div style=${{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px 4px", fontSize: 10, fontFamily: T.font.mono }}>
+                <span style=${{ padding: "1px 6px", background: T.color.surface3, borderRadius: T.radius.xs, color: T.color.textSecondary, fontWeight: 600, letterSpacing: "0.04em" }}>stdenv:${label}</span>
+                <span style=${{ color: T.color.pass400 }}>${sgPassed}✓</span>
+                ${sgFailed > 0 && html`<span style=${{ color: T.color.fail400 }}>${sgFailed}✕</span>`}
+                <span style=${{ color: T.color.textTertiary }}>${sgBuilds.length} derivation${sgBuilds.length !== 1 ? "s" : ""}</span>
+              </div>
+              ${renderBuilds(sgBuilds)}
+            </div>
+          `;
+        });
       })()}
     </div>
   `;

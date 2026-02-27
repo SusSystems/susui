@@ -161,6 +161,70 @@ fn find_drvs_by_name_inner(
     Ok(results)
 }
 
+/// Find the stdenv derivation referenced by each of the given `.drv` paths.
+///
+/// Queries the `Refs` table to find stdenv references (e.g. `*-stdenv-linux.drv`).
+/// Returns `HashMap<drv_path, stdenv_hash>` where `stdenv_hash` is the 8-char
+/// nix store hash prefix from the stdenv derivation path.
+pub fn find_stdenv_for_drvs(drv_paths: &[String]) -> HashMap<String, String> {
+    match find_stdenv_for_drvs_inner(drv_paths) {
+        Ok(results) => results,
+        Err(e) => {
+            tracing::debug!("nixdb: failed to query stdenv for drvs: {}", e);
+            HashMap::new()
+        }
+    }
+}
+
+fn find_stdenv_for_drvs_inner(
+    drv_paths: &[String],
+) -> Result<HashMap<String, String>, rusqlite::Error> {
+    if drv_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let conn = Connection::open_with_flags(
+        NIX_DB_PATH,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+
+    let mut results: HashMap<String, String> = HashMap::new();
+
+    for chunk in drv_paths.chunks(100) {
+        let placeholders: String = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT vp1.path, vp2.path \
+             FROM Refs r \
+             JOIN ValidPaths vp1 ON r.referrer = vp1.id \
+             JOIN ValidPaths vp2 ON r.reference = vp2.id \
+             WHERE vp1.path IN ({}) \
+               AND (vp2.path LIKE '%-stdenv-linux.drv' OR vp2.path LIKE '%-stdenv-darwin.drv') \
+               AND vp2.path NOT LIKE '%bootstrap%'",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for row in rows.flatten() {
+            let (drv_path, stdenv_path) = row;
+            // Parse hash from /nix/store/<32-char-hash>-stdenv-linux.drv
+            let fname = stdenv_path.split('/').next_back().unwrap_or("");
+            if fname.len() > 32 {
+                let hash = &fname[..8];
+                results.insert(drv_path, hash.to_string());
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Find all output store paths derived from the given `.drv` paths.
 ///
 /// Returns a map of `drv_path → Vec<(output_path, registration_time)>`.

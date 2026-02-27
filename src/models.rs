@@ -96,6 +96,11 @@ pub struct Build {
     /// Whether this build is an alias for another attribute (e.g., packages.default → packages.susui)
     #[serde(default)]
     pub is_alias: bool,
+    /// Subgroup identifier when a commit has builds from multiple nixpkgs evaluations.
+    /// Set to the first 8 chars of the stdenv derivation hash. Only present when >1
+    /// distinct stdenv exists for a commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_group: Option<String>,
 }
 
 /// Summary stats for the dashboard

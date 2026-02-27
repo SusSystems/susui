@@ -525,6 +525,7 @@ fn build_derivation(
         historical: false,
         dirty,
         is_alias: false,
+        input_group: None,
     }
 }
 
@@ -605,6 +606,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
             historical: false,
             dirty,
             is_alias: false,
+            input_group: None,
         };
     }
 
@@ -660,6 +662,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
         historical: false,
         dirty,
         is_alias: false,
+        input_group: None,
     }
 }
 
@@ -1434,6 +1437,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
                 historical: true,
                 dirty: false,
                 is_alias: false,
+                input_group: None,
             });
         }
     }
@@ -1916,6 +1920,7 @@ fn discover_builds_by_attr_hints(
                     historical: true,
                     dirty: false,
                     is_alias: false,
+                    input_group: None,
                 });
             }
         }
@@ -1960,6 +1965,7 @@ fn discover_builds_by_attr_hints(
                 historical: true,
                 dirty: false,
                 is_alias: true,
+                input_group: None,
             });
         }
     }
@@ -2073,6 +2079,7 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, S
             }
         }
         resolve_historical_commits(&nix, &mut builds, metadata);
+        assign_input_groups(&mut builds);
     } else {
         // Normal path: detect aliases, sort, find historical, resolve commits
         detect_aliases(&mut builds);
@@ -2089,6 +2096,7 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, S
             }
             resolve_historical_commits(&nix, &mut builds, metadata);
         }
+        assign_input_groups(&mut builds);
     }
 
     enrich_build_durations(&mut builds);
@@ -2132,6 +2140,78 @@ fn detect_aliases(builds: &mut [Build]) {
             if leaf == "default" {
                 builds[i].is_alias = true;
             }
+        }
+    }
+}
+
+/// Assign `input_group` labels to builds when a commit has builds from multiple
+/// nixpkgs evaluations (detected via distinct stdenv derivation hashes).
+///
+/// Only sets `input_group` when >1 distinct stdenv exists for a commit.
+/// Single-eval commits are left untouched (no subgroup headers).
+fn assign_input_groups(builds: &mut [Build]) {
+    use std::collections::{HashMap, HashSet};
+
+    // Group build indices by commit, collecting unique drv_paths per commit
+    let mut commit_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, build) in builds.iter().enumerate() {
+        commit_indices
+            .entry(build.commit.clone())
+            .or_default()
+            .push(i);
+    }
+
+    // Filter to commits with >1 unique drv_path (potential multi-eval)
+    let mut all_drv_paths: Vec<String> = Vec::new();
+    let mut multi_drv_commits: Vec<String> = Vec::new();
+
+    for (commit, indices) in &commit_indices {
+        let unique_drvs: HashSet<&str> = indices
+            .iter()
+            .filter_map(|&i| builds[i].drv_path.as_deref())
+            .collect();
+        if unique_drvs.len() > 1 {
+            multi_drv_commits.push(commit.clone());
+            all_drv_paths.extend(unique_drvs.into_iter().map(|s| s.to_string()));
+        }
+    }
+
+    if multi_drv_commits.is_empty() {
+        return;
+    }
+
+    all_drv_paths.sort();
+    all_drv_paths.dedup();
+
+    // Query nix DB for stdenv hashes
+    let stdenv_map = crate::nixdb::find_stdenv_for_drvs(&all_drv_paths);
+
+    // For each multi-drv commit, check if >1 distinct stdenv exists
+    for commit in &multi_drv_commits {
+        let indices = &commit_indices[commit];
+        let distinct_stdenvs: HashSet<&str> = indices
+            .iter()
+            .filter_map(|&i| {
+                builds[i]
+                    .drv_path
+                    .as_deref()
+                    .and_then(|drv| stdenv_map.get(drv).map(|s| s.as_str()))
+            })
+            .collect();
+
+        if distinct_stdenvs.len() <= 1 {
+            // All builds share the same stdenv — no subgrouping needed
+            continue;
+        }
+
+        // Multiple stdenvs: assign input_group to each build
+        for &i in indices {
+            let group = builds[i]
+                .drv_path
+                .as_deref()
+                .and_then(|drv| stdenv_map.get(drv).cloned())
+                .unwrap_or_else(|| "unknown".to_string());
+            builds[i].input_group = Some(group);
         }
     }
 }
@@ -2460,7 +2540,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                 duration: "1s".into(), time: "now".into(), branch: None,
                 commit: "abc".into(), owner: None, repo: None, forge_url: None,
                 flake_ref: ".".into(), pr: None, override_inputs: vec![], log: vec![],
-                drv_path: None, store_path: None, in_store: true, historical: false, dirty: false, is_alias: false,
+                drv_path: None, store_path: None, in_store: true, historical: false, dirty: false, is_alias: false, input_group: None,
             },
             Build {
                 id: 2, derivation: "b".into(), status: BuildStatus::Failed,
@@ -2473,7 +2553,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
                     git_ref: Some("main".into()), pr: None,
                 }],
                 log: vec![],
-                drv_path: None, store_path: None, in_store: false, historical: false, dirty: false, is_alias: false,
+                drv_path: None, store_path: None, in_store: false, historical: false, dirty: false, is_alias: false, input_group: None,
             },
         ];
         let stats = BuildStats::from_builds(&builds);
@@ -2507,6 +2587,7 @@ error (ignored): opening file '/nix/store/xxx-stdenv.drv': No such file or direc
             historical: false,
             dirty: false,
             is_alias: false,
+            input_group: None,
         }
     }
 
