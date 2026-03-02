@@ -251,15 +251,22 @@ fn cmd_scan(
         println!("├───────────────────────────────────────────────┤");
 
         // Group builds by (commit, branch, flake_ref)
+        // Sentinel commits (containing '…') from unresolved historical builds
+        // are normalized to group together under a single "unresolved" key per branch.
         let mut groups: Vec<(String, Option<String>, String, Vec<&Build>)> = Vec::new();
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         // Sort: current (non-historical) first, then historical
         let mut sorted_builds: Vec<&Build> = builds.iter().collect();
         sorted_builds.sort_by_key(|b| b.historical);
         for build in &sorted_builds {
+            let group_commit = if build.commit.contains('…') {
+                "unresolved".to_string()
+            } else {
+                build.commit.clone()
+            };
             let key = format!(
                 "{}|{}|{}",
-                build.commit,
+                group_commit,
                 build.branch.as_deref().unwrap_or(""),
                 build.flake_ref
             );
@@ -268,7 +275,7 @@ fn cmd_scan(
             } else {
                 seen.insert(key.clone(), groups.len());
                 groups.push((
-                    build.commit.clone(),
+                    group_commit,
                     build.branch.clone(),
                     build.flake_ref.clone(),
                     vec![build],
@@ -296,6 +303,8 @@ fn cmd_scan(
 
             if commit == "0000000000000000000000000000000000000000" || commit.is_empty() {
                 println!("│  ■ {} (unknown commit) ({})", short_sha, summary);
+            } else if commit == "unresolved" {
+                println!("│  ■ (unresolved commits) {} ({})", branch_str, summary);
             } else {
                 println!("│  ■ {} {} ({})", short_sha, branch_str, summary);
             }
@@ -327,63 +336,11 @@ fn cmd_scan(
                     let sg_summary = sg_parts.join(", ");
 
                     println!("│    ┌ [stdenv:{}] ({})", sg_label, sg_summary);
-                    for build in sg_builds {
-                        let icon = match build.status {
-                            BuildStatus::Passed => "✓",
-                            BuildStatus::Failed => "✕",
-                            BuildStatus::Running => "↻",
-                            BuildStatus::Pending => "◦",
-                            BuildStatus::Skipped => "—",
-                            BuildStatus::Unknown => "?",
-                        };
-                        let ov_mark = if !build.override_inputs.is_empty() {
-                            format!(" ⚑{}", build.override_inputs.len())
-                        } else {
-                            String::new()
-                        };
-                        let store_mark = if build.in_store { "" } else { " ◌" };
-                        let alias_mark = if build.is_alias { " ≡" } else { "" };
-                        println!(
-                            "│    │  {} {} {} {}{}{}{}",
-                            icon,
-                            build.status,
-                            truncate(&build.derivation, 30),
-                            build.duration,
-                            ov_mark,
-                            store_mark,
-                            alias_mark
-                        );
-                    }
+                    render_dependency_grouped_builds(&sg_builds, "│    │  ", commit);
                     println!("│    └");
                 }
             } else {
-                for build in group_builds {
-                    let icon = match build.status {
-                        BuildStatus::Passed => "✓",
-                        BuildStatus::Failed => "✕",
-                        BuildStatus::Running => "↻",
-                        BuildStatus::Pending => "◦",
-                        BuildStatus::Skipped => "—",
-                        BuildStatus::Unknown => "?",
-                    };
-                    let ov_mark = if !build.override_inputs.is_empty() {
-                        format!(" ⚑{}", build.override_inputs.len())
-                    } else {
-                        String::new()
-                    };
-                    let store_mark = if build.in_store { "" } else { " ◌" };
-                    let alias_mark = if build.is_alias { " ≡" } else { "" };
-                    println!(
-                        "│    {} {} {} {}{}{}{}",
-                        icon,
-                        build.status,
-                        truncate(&build.derivation, 33),
-                        build.duration,
-                        ov_mark,
-                        store_mark,
-                        alias_mark
-                    );
-                }
+                render_dependency_grouped_builds_flat(group_builds, "│    ");
             }
         }
         println!("╰───────────────────────────────────────────────╯");
@@ -732,6 +689,227 @@ fn cmd_info(flake_ref: &str, json_output: bool, overrides: &[(String, String)]) 
         println!("╰───────────────────────────────────────────────╯");
     }
     Ok(())
+}
+
+/// Format a build line for the TUI scan output
+fn format_build_line(build: &Build) -> String {
+    let icon = match build.status {
+        BuildStatus::Passed => "✓",
+        BuildStatus::Failed => "✕",
+        BuildStatus::Running => "↻",
+        BuildStatus::Pending => "◦",
+        BuildStatus::Skipped => "—",
+        BuildStatus::Unknown => "?",
+    };
+    let ov_mark = if !build.override_inputs.is_empty() {
+        format!(" ⚑{}", build.override_inputs.len())
+    } else {
+        String::new()
+    };
+    let store_mark = if build.in_store { "" } else { " ◌" };
+    let alias_mark = if build.is_alias { " ≡" } else { "" };
+    format!(
+        "{} {} {} {}{}{}{}",
+        icon,
+        build.status,
+        truncate(&build.derivation, 33),
+        build.duration,
+        ov_mark,
+        store_mark,
+        alias_mark
+    )
+}
+
+/// Extract the package leaf name that a check depends on.
+/// `checks.x86_64-linux.build-gsk_cms` → `gsk_cms`
+/// `checks.x86_64-linux.test-gsk_ssl_bvt` → `gsk_ssl_bvt`
+fn check_depends_on_leaf(attr: &str) -> Option<String> {
+    if !attr.starts_with("checks.") {
+        return None;
+    }
+    let leaf = attr.split('.').next_back()?;
+    leaf.strip_prefix("build-")
+        .or_else(|| leaf.strip_prefix("test-"))
+        .map(|s| s.to_string())
+}
+
+/// Group builds by dependency: packages first, with their dependent checks grouped
+/// underneath, then independent checks, devShells, formatter, and other outputs.
+///
+/// Returns a Vec of (group_label, builds) where group_label is:
+///   - Some("packages.x86_64-linux.gsk_cms") for a package + its checks
+///   - None for ungrouped builds
+fn dependency_group_builds<'a, B: std::ops::Deref<Target = Build>>(
+    builds: &'a [B],
+) -> Vec<(Option<&'a str>, Vec<&'a Build>)> {
+    use std::collections::{HashMap, HashSet};
+
+    // Collect package drvs and leaf→attr mapping
+    let mut pkg_drv_to_attr: HashMap<&str, &str> = HashMap::new();
+    let mut pkg_leaf_to_drv: HashMap<String, HashSet<&str>> = HashMap::new();
+
+    for b in builds {
+        let b: &Build = b;
+        if b.derivation.starts_with("packages.") {
+            if let Some(ref drv) = b.drv_path {
+                pkg_drv_to_attr.insert(drv.as_str(), &b.derivation);
+                let leaf = b.derivation.split('.').next_back().unwrap_or("");
+                if leaf != "default" {
+                    pkg_leaf_to_drv.entry(leaf.to_string()).or_default().insert(drv.as_str());
+                }
+            }
+        }
+    }
+
+    // Figure out which builds go under which package
+    // Key: package derivation attr → Vec of builds (package + checks)
+    let mut grouped: Vec<(Option<&str>, Vec<&Build>)> = Vec::new();
+    let mut used: HashSet<usize> = HashSet::new();
+
+    // First pass: emit packages with their dependent checks
+    for (i, b) in builds.iter().enumerate() {
+        let b_ref: &Build = b;
+        if !b_ref.derivation.starts_with("packages.") {
+            continue;
+        }
+        if b_ref.is_alias {
+            continue;
+        }
+        if used.contains(&i) {
+            continue;
+        }
+
+        let pkg_attr = &b_ref.derivation;
+        let pkg_leaf = pkg_attr.split('.').next_back().unwrap_or("");
+        if pkg_leaf == "default" || pkg_leaf == "full" {
+            continue; // handle meta-packages later
+        }
+
+        let mut group_builds: Vec<&Build> = vec![b_ref];
+        used.insert(i);
+
+        // Find checks that depend on this package (by drv_path match or leaf name)
+        for (j, cb) in builds.iter().enumerate() {
+            let cb_ref: &Build = cb;
+            if used.contains(&j) || !cb_ref.derivation.starts_with("checks.") {
+                continue;
+            }
+
+            let matches = if let (Some(ref c_drv), Some(ref p_drv)) = (&cb_ref.drv_path, &b_ref.drv_path) {
+                c_drv == p_drv
+            } else if let Some(dep_leaf) = check_depends_on_leaf(&cb_ref.derivation) {
+                dep_leaf == pkg_leaf
+            } else {
+                false
+            };
+
+            if matches {
+                group_builds.push(cb_ref);
+                used.insert(j);
+            }
+        }
+
+        grouped.push((Some(pkg_attr.as_str()), group_builds));
+    }
+
+    // Second pass: remaining builds (independent checks, devShells, formatter, aliases, meta-packages)
+    for (i, b) in builds.iter().enumerate() {
+        if used.contains(&i) {
+            continue;
+        }
+        used.insert(i);
+        let b_ref: &Build = b;
+        grouped.push((None, vec![b_ref]));
+    }
+
+    grouped
+}
+
+/// Render dependency-grouped builds for a subgroup (with commit annotation).
+/// In subgroups, every build shows its commit (or "commit not found").
+fn render_dependency_grouped_builds(builds: &[&&Build], prefix: &str, _group_commit: &str) {
+    let derefs: Vec<&Build> = builds.iter().map(|b| **b).collect();
+    let dep_groups = dependency_group_builds(&derefs);
+
+    for (pkg_label, group_builds) in &dep_groups {
+        if let Some(_label) = pkg_label {
+            // Package group: package builds first, then checks indented
+            let pkg_builds: Vec<&&Build> = group_builds.iter()
+                .filter(|b| b.derivation.starts_with("packages."))
+                .collect();
+            let check_builds: Vec<&&Build> = group_builds.iter()
+                .filter(|b| !b.derivation.starts_with("packages."))
+                .collect();
+
+            for build in &pkg_builds {
+                let commit_mark = subgroup_commit_annotation(&build.commit);
+                println!("{}{}{}", prefix, format_build_line(build), commit_mark);
+            }
+            for build in &check_builds {
+                let commit_mark = subgroup_commit_annotation(&build.commit);
+                println!("{}  └ {}{}", prefix, format_build_line(build), commit_mark);
+            }
+        } else {
+            for build in group_builds {
+                let commit_mark = subgroup_commit_annotation(&build.commit);
+                println!("{}{}{}", prefix, format_build_line(build), commit_mark);
+            }
+        }
+    }
+}
+
+/// Render dependency-grouped builds for the flat (non-subgrouped) view.
+fn render_dependency_grouped_builds_flat(builds: &[&Build], prefix: &str) {
+    let dep_groups = dependency_group_builds(builds);
+
+    for (pkg_label, group_builds) in &dep_groups {
+        if let Some(_) = pkg_label {
+            let pkg_builds: Vec<&&Build> = group_builds.iter()
+                .filter(|b| b.derivation.starts_with("packages."))
+                .collect();
+            let dep_builds: Vec<&&Build> = group_builds.iter()
+                .filter(|b| !b.derivation.starts_with("packages."))
+                .collect();
+
+            for build in &pkg_builds {
+                println!("{}{}", prefix, format_build_line(build));
+            }
+            for build in &dep_builds {
+                println!("{}  └ {}", prefix, format_build_line(build));
+            }
+        } else {
+            for build in group_builds {
+                println!("{}{}", prefix, format_build_line(build));
+            }
+        }
+    }
+}
+
+/// Show a commit annotation when the build's commit differs from the group commit.
+#[allow(dead_code)]
+fn commit_annotation(build_commit: &str, group_commit: &str) -> String {
+    if build_commit == group_commit {
+        return String::new();
+    }
+    // Unresolved historical builds have commit like "<hash>…<drv_name>"
+    if build_commit.contains('…') {
+        return " (commit not found)".to_string();
+    }
+    let short = if build_commit.len() >= 8 { &build_commit[..8] } else { build_commit };
+    format!(" @{}", short)
+}
+
+/// Show a commit annotation for every build within a subgroup.
+/// Always displays the commit (or "commit not found" for unresolved builds).
+fn subgroup_commit_annotation(build_commit: &str) -> String {
+    if build_commit.contains('…') {
+        return " (commit not found)".to_string();
+    }
+    if build_commit == "0000000000000000000000000000000000000000" || build_commit.is_empty() {
+        return " (commit not found)".to_string();
+    }
+    let short = if build_commit.len() >= 8 { &build_commit[..8] } else { build_commit };
+    format!(" @{}", short)
 }
 
 fn truncate(s: &str, max: usize) -> &str {

@@ -1781,19 +1781,42 @@ fn discover_builds_by_attr_hints(
     let mut leaf_names: Vec<String> = Vec::new();
     let mut default_attrs: Vec<String> = Vec::new();
     let mut leaf_to_attrs: HashMap<String, Vec<String>> = HashMap::new();
+    // Map check/test attrs to the package leaf they depend on.
+    // e.g. checks.x86_64-linux.build-gsk_cms → gsk_cms
+    //      checks.x86_64-linux.test-gsk_ssl_bvt → gsk_ssl_bvt
+    let mut check_to_pkg_leaf: HashMap<String, String> = HashMap::new();
 
     for attr in failed_attrs {
         let leaf = attr.split('.').next_back().unwrap_or(attr);
         if leaf == "default" {
             default_attrs.push(attr.clone());
-        } else {
-            if !leaf_names.contains(&leaf.to_string()) {
-                leaf_names.push(leaf.to_string());
+            continue;
+        }
+        if !leaf_names.contains(&leaf.to_string()) {
+            leaf_names.push(leaf.to_string());
+        }
+        leaf_to_attrs
+            .entry(leaf.to_string())
+            .or_default()
+            .push(attr.clone());
+
+        // For check attrs with build-/test- prefix, also register the underlying
+        // package leaf so we can share drvs when the check rebuilds the same derivation.
+        if attr.starts_with("checks.") {
+            let pkg_leaf = if let Some(rest) = leaf.strip_prefix("build-") {
+                Some(rest.to_string())
+            } else if let Some(rest) = leaf.strip_prefix("test-") {
+                Some(rest.to_string())
+            } else {
+                None
+            };
+            if let Some(pl) = pkg_leaf {
+                check_to_pkg_leaf.insert(leaf.to_string(), pl.clone());
+                // Ensure the package leaf is also queried
+                if !leaf_names.contains(&pl) {
+                    leaf_names.push(pl);
+                }
             }
-            leaf_to_attrs
-                .entry(leaf.to_string())
-                .or_default()
-                .push(attr.clone());
         }
     }
 
@@ -1841,6 +1864,18 @@ fn discover_builds_by_attr_hints(
         }
     }
 
+    // For check attrs whose leaf wasn't directly found in the DB (e.g. "build-gsk_cms"),
+    // inherit the drv matches from the underlying package leaf (e.g. "gsk_cms").
+    // This handles `nix flake check` derivations that rebuild the same .drv as the package.
+    for (check_leaf, pkg_leaf) in &check_to_pkg_leaf {
+        if leaf_matches.contains_key(check_leaf) {
+            continue; // already has direct matches
+        }
+        if let Some(pkg_drvs) = leaf_matches.get(pkg_leaf) {
+            leaf_matches.insert(check_leaf.clone(), pkg_drvs.clone());
+        }
+    }
+
     // Query outputs for all matched drvs
     let all_drv_paths: Vec<String> = filtered.iter().map(|(p, _, _)| p.clone()).collect();
     let outputs_map = crate::nixdb::find_outputs_for_drvs(&all_drv_paths);
@@ -1854,7 +1889,7 @@ fn discover_builds_by_attr_hints(
             None => continue,
         };
 
-        for (drv_path, _drv_name, _drv_hash) in matches {
+        for (drv_path, drv_name, drv_hash) in matches {
             // Check outputs
             let db_outputs = outputs_map.get(drv_path.as_str());
             let found_output = db_outputs.and_then(|outs| {
@@ -1903,6 +1938,11 @@ fn discover_builds_by_attr_hints(
                 .unwrap_or_default();
 
             for attr in attrs {
+                // Use a sentinel commit that will be replaced by
+                // resolve_historical_commits if a match is found.
+                // The drv hash prefix makes unresolved builds identifiable
+                // in the TUI while still carrying useful debug info.
+                let sentinel_commit = format!("{}…{}", &drv_hash[..8], drv_name);
                 builds.push(Build {
                     id: 0,
                     derivation: attr.clone(),
@@ -1910,7 +1950,7 @@ fn discover_builds_by_attr_hints(
                     duration: "—".to_string(),
                     time: time_str.clone(),
                     branch: git_info.branch.clone(),
-                    commit: git_info.commit.clone(),
+                    commit: sentinel_commit,
                     owner: git_info.owner.clone(),
                     repo: git_info.repo.clone(),
                     forge_url: git_info.forge_url.clone(),
@@ -2156,11 +2196,18 @@ fn detect_aliases(builds: &mut [Build]) {
 fn assign_input_groups(builds: &mut [Build]) {
     use std::collections::{HashMap, HashSet};
 
-    // Group build indices by commit, collecting unique drv_paths per commit
+    // Group build indices by commit, collecting unique drv_paths per commit.
+    // Normalize sentinel commits (containing '…') to "unresolved" so that
+    // unresolved historical builds are grouped together for stdenv analysis.
     let mut commit_indices: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, build) in builds.iter().enumerate() {
+        let key = if build.commit.contains('…') {
+            format!("unresolved|{}", build.branch.as_deref().unwrap_or(""))
+        } else {
+            build.commit.clone()
+        };
         commit_indices
-            .entry(build.commit.clone())
+            .entry(key)
             .or_default()
             .push(i);
     }
