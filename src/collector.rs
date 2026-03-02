@@ -1574,12 +1574,18 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
 
         // Use the forge host to build the nix ref prefix.
         // github.com → github:<owner>/<repo>/<sha>#<attr>
-        // GHE hosts  → git+https://<host>/<owner>/<repo>?rev=<sha>#<attr>
+        // GHE hosts  → git+ssh://git@<host>/<owner>/<repo>?rev=<sha>#<attr>
+        //              (prefer ssh to avoid HTTPS credential prompts)
         let prefix = if src_forge == "https://github.com" {
             format!("github:{}/{}/", src_owner, src_repo)
         } else {
             let host = src_forge.strip_prefix("https://").unwrap_or(&src_forge);
-            format!("git+https://{}/{}/{}?rev=", host, src_owner, src_repo)
+            let uses_ssh = src.url.contains("ssh://") || src.url.starts_with("git@");
+            if uses_ssh {
+                format!("git+ssh://git@{}/{}/{}?rev=", host, src_owner, src_repo)
+            } else {
+                format!("git+https://{}/{}/{}?rev=", host, src_owner, src_repo)
+            }
         };
         (commits, prefix)
     };
