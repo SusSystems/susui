@@ -1522,11 +1522,11 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
     // Get unique attribute paths from historical builds
     let attrs: Vec<String> = historical_attrs.into_iter().collect();
 
-    let (commits_owned, nix_ref_prefix): (Vec<String>, String) = if let Some(d) = local_dir {
+    let (commits_owned, wrapper_flake_ref, src_url_base): (Vec<String>, String, String) = if let Some(d) = local_dir {
         if git_commit(&d).is_none() {
             return;
         }
-        let prefix = format!("git+file:{}?rev=", d);
+        let wrapper_ref = format!("git+file:{}?rev=", d);
         let (ok, stdout, _) = run_cmd_full(
             "git",
             &["-C", &d, "log", "--format=%H", "--all", "-200"],
@@ -1535,7 +1535,7 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
             return;
         }
         let commits = stdout.lines().filter(|l| !l.is_empty()).map(String::from).collect();
-        (commits, prefix)
+        (commits, wrapper_ref, String::new())   // empty src_url_base = local mode
     } else {
         // Remote ref: use GitHub API to list recent commits from the src input
         let src = match metadata.inputs.iter().find(|i| i.name == "src") {
@@ -1572,22 +1572,12 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
             }
         };
 
-        // Use the forge host to build the nix ref prefix.
-        // github.com → github:<owner>/<repo>/<sha>#<attr>
-        // GHE hosts  → git+ssh://git@<host>/<owner>/<repo>?rev=<sha>#<attr>
-        //              (prefer ssh to avoid HTTPS credential prompts)
-        let prefix = if src_forge == "https://github.com" {
-            format!("github:{}/{}/", src_owner, src_repo)
-        } else {
-            let host = src_forge.strip_prefix("https://").unwrap_or(&src_forge);
-            let uses_ssh = src.url.contains("ssh://") || src.url.starts_with("git@");
-            if uses_ssh {
-                format!("git+ssh://git@{}/{}/{}?rev=", host, src_owner, src_repo)
-            } else {
-                format!("git+https://{}/{}/{}?rev=", host, src_owner, src_repo)
-            }
-        };
-        (commits, prefix)
+        // Evaluate the wrapper flake (metadata.resolved_url) and override its
+        // `src` input per commit.  Strip any existing ?rev= from the src URL
+        // so we can append ?rev=<sha> cleanly.
+        let wrapper_ref = metadata.resolved_url.clone();
+        let src_base = src.url.split('?').next().unwrap_or(&src.url).to_string();
+        (commits, wrapper_ref, src_base)
     };
     let commits: Vec<&str> = commits_owned.iter().map(|s| s.as_str()).collect();
 
@@ -1626,8 +1616,20 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
                 continue;
             }
 
-            let target = format!("{}{}#{}", nix_ref_prefix, commit, attr);
-            let (ok, stdout, _) = run_cmd_full(nix, &["path-info", "--derivation", &target]);
+            let (ok, stdout, _) = if src_url_base.is_empty() {
+                // Local flake: embed commit directly into the flake ref
+                let target = format!("{}{}#{}", wrapper_flake_ref, commit, attr);
+                run_cmd_full(nix, &["path-info", "--derivation", &target])
+            } else {
+                // Remote wrapper flake: override src input per commit
+                let target = format!("{}#{}", wrapper_flake_ref, attr);
+                let src_override = format!("{}?rev={}", src_url_base, commit);
+                run_cmd_full(nix, &[
+                    "path-info", "--derivation", &target,
+                    "--override-input", "src", &src_override,
+                    "--no-write-lock-file",
+                ])
+            };
 
             let drv_path = stdout.trim().to_string();
             if !ok && !drv_path.starts_with("/nix/store/") {
