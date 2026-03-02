@@ -69,6 +69,70 @@ fn run_cmd_full(cmd: &str, args: &[&str]) -> (bool, String, String) {
     }
 }
 
+/// Run a command with a wall-clock timeout (seconds).
+///
+/// Uses polling via `Child::try_wait` so we can kill the process if it exceeds
+/// the deadline. Safe for commands with small output (drv paths, JSON) where
+/// the pipe buffer won't fill up and cause the child to block.
+///
+/// Returns `(success, stdout, stderr)`. On timeout, returns `(false, "", "timed out …")`.
+fn run_cmd_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> (bool, String, String) {
+    use std::io::Read;
+
+    let mut child = match Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return (false, String::new(), format!("Failed to spawn: {}", e)),
+    };
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(timeout_secs);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout_buf = Vec::new();
+                let mut stderr_buf = Vec::new();
+                if let Some(ref mut out) = child.stdout {
+                    let _ = out.read_to_end(&mut stdout_buf);
+                }
+                if let Some(ref mut err) = child.stderr {
+                    let _ = err.read_to_end(&mut stderr_buf);
+                }
+                return (
+                    status.success(),
+                    String::from_utf8_lossy(&stdout_buf).to_string(),
+                    String::from_utf8_lossy(&stderr_buf).to_string(),
+                );
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    tracing::warn!(
+                        cmd,
+                        timeout_secs,
+                        "nix command timed out — killing child process"
+                    );
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return (
+                        false,
+                        String::new(),
+                        format!("timed out after {}s", timeout_secs),
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return (false, String::new(), format!("wait error: {}", e));
+            }
+        }
+    }
+}
+
 /// Extract local git directory from a flake ref.
 /// Returns None for remote flake refs (github:, git+ssh://, etc.)
 fn git_dir_from_flake_ref(flake_ref: &str) -> Option<String> {
@@ -540,21 +604,38 @@ fn build_derivation(
 ///   - Output in store → Passed (previously built successfully)
 ///   - Output NOT in store, eval succeeded → Unknown (not yet built)
 ///   - Eval failed → Failed
-fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], id: u64, git_info: &ResolvedGitInfo) -> Build {
+/// Evaluate a derivation and return a Build record by introspecting the nix store.
+///
+/// `pre_resolved_drv`: optional .drv path from a batched `nix path-info --derivation` call.
+/// When `Some`, skips the individual nix invocation entirely.
+fn eval_derivation(
+    flake_ref: &str,
+    attr: &str,
+    overrides: &[(String, String)],
+    id: u64,
+    git_info: &ResolvedGitInfo,
+    pre_resolved_drv: Option<String>,
+) -> Build {
     let nix = nix_bin();
     let target = format!("{}#{}", flake_ref, attr);
 
-    let mut args = vec!["path-info", "--derivation", &target];
-    append_override_args(&mut args, overrides);
-
     let start = Instant::now();
-    let (success, stdout, stderr) = run_cmd_full(&nix, &args);
-    let elapsed = start.elapsed();
 
+    // Use pre-resolved drv path if available (from batch call), otherwise resolve individually.
+    let (success, raw_drv, stderr) = if let Some(drv) = pre_resolved_drv {
+        (true, drv, String::new())
+    } else {
+        let mut args = vec!["path-info", "--derivation", &target, "--no-write-lock-file"];
+        append_override_args(&mut args, overrides);
+        let (ok, out, err) = run_cmd_with_timeout(&nix, &args, 120);
+        (ok, out, err)
+    };
+
+    let elapsed = start.elapsed();
     let duration = format_duration(elapsed);
 
     // The derivation store path is the meaningful output
-    let drv_path = stdout.trim().to_string();
+    let drv_path = raw_drv.trim().to_string();
 
     let branch = git_info.branch.clone();
     let commit = git_info.commit.clone();
@@ -569,7 +650,7 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
 
     if !eval_ok {
         // Evaluation itself failed — show the filtered error output
-        let combined = format!("{}{}", stdout, stderr);
+        let combined = format!("{}{}", drv_path, stderr);
         let log_lines = make_log_lines(&combined);
         let override_inputs: Vec<OverrideInput> = overrides
             .iter()
@@ -670,9 +751,9 @@ fn eval_derivation(flake_ref: &str, attr: &str, overrides: &[(String, String)], 
 /// Returns (store_path, exists).
 fn check_output_in_store(nix: &str, target: &str, _drv_path: &str, overrides: &[(String, String)]) -> (Option<String>, bool) {
     // Strategy 1: `nix path-info <target>` — asks for the output, not the .drv
-    let mut pi_args = vec!["path-info", target];
+    let mut pi_args = vec!["path-info", target, "--no-write-lock-file"];
     append_override_args(&mut pi_args, overrides);
-    let (ok, stdout, _) = run_cmd_full(nix, &pi_args);
+    let (ok, stdout, _) = run_cmd_with_timeout(nix, &pi_args, 60);
     if ok {
         let path = stdout.trim().to_string();
         if !path.is_empty() && path.starts_with("/nix/store/") && !path.ends_with(".drv") {
@@ -2092,10 +2173,90 @@ fn scan_flake(flake_ref: &str, metadata: &FlakeMetadata, overrides: &[(String, S
 
     tracing::info!(count = outputs.len(), "Found flake outputs");
 
+    // ── Batch-resolve all .drv paths in a single nix invocation ──────────────
+    // Building one `nix path-info --derivation` call with all targets avoids
+    // N separate nix evaluations (each of which would re-fetch the remote flake).
+    let targets: Vec<String> = outputs
+        .iter()
+        .map(|a| format!("{}#{}", flake_ref, a))
+        .collect();
+
+    let mut batch_args: Vec<&str> = vec!["path-info", "--derivation", "--no-write-lock-file"];
+    for t in &targets {
+        batch_args.push(t.as_str());
+    }
+    append_override_args(&mut batch_args, overrides);
+
+    let batch_start = Instant::now();
+    tracing::info!(
+        count = outputs.len(),
+        "Batch-resolving derivation paths (single nix invocation)"
+    );
+
+    // Use a generous timeout: remote flakes may need to fetch inputs first.
+    let (batch_ok, batch_stdout, batch_stderr) =
+        run_cmd_with_timeout(&nix, &batch_args, 300);
+
+    let batch_elapsed = batch_start.elapsed();
+    tracing::info!(
+        elapsed_secs = batch_elapsed.as_secs(),
+        ok = batch_ok,
+        "Batch derivation resolution complete"
+    );
+
+    if !batch_ok && !batch_stdout.contains("/nix/store/") {
+        tracing::warn!(
+            stderr = %batch_stderr.lines().take(5).collect::<Vec<_>>().join(" | "),
+            "Batch nix path-info failed — will fall back to per-attr resolution"
+        );
+    }
+
+    // Parse output: one /nix/store/…drv path per line, same order as inputs.
+    // If the count doesn't match (partial failure), fall back to None for all
+    // so each attr resolves individually with its own timeout.
+    let batch_drv_paths: Vec<Option<String>> = {
+        let lines: Vec<&str> = batch_stdout
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        if lines.len() == outputs.len() {
+            lines
+                .iter()
+                .map(|l| {
+                    if l.starts_with("/nix/store/") {
+                        Some(l.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        } else {
+            // Count mismatch — batch partially failed; fall back to per-attr
+            tracing::warn!(
+                expected = outputs.len(),
+                got = lines.len(),
+                "Batch drv resolution line count mismatch — falling back to per-attr"
+            );
+            vec![None; outputs.len()]
+        }
+    };
+
+    let scan_start = Instant::now();
     let mut builds = Vec::new();
     for (i, attr) in outputs.iter().enumerate() {
-        tracing::info!(attr, "Processing derivation");
-        let build = eval_derivation(flake_ref, attr, overrides, (i + 1) as u64, &git_info);
+        let pre_drv = batch_drv_paths.get(i).and_then(|d| d.clone());
+        let resolved = pre_drv.is_some();
+        tracing::info!(
+            attr,
+            n = i + 1,
+            total = outputs.len(),
+            elapsed_secs = scan_start.elapsed().as_secs(),
+            pre_resolved = resolved,
+            "Processing derivation"
+        );
+        let build = eval_derivation(flake_ref, attr, overrides, (i + 1) as u64, &git_info, pre_drv);
         builds.push(build);
     }
 
