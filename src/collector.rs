@@ -1295,7 +1295,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
     // Also map drv_name → (flake_ref, derivation attr) for building the Build entry
     let mut current_hashes: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
-    let mut drv_name_info: std::collections::HashMap<String, Vec<(&str, &str)>> =
+    let mut drv_name_info: std::collections::HashMap<String, Vec<(&str, &str, Option<&str>)>> =
         std::collections::HashMap::new();
 
     for build in current_builds {
@@ -1320,7 +1320,7 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
         drv_name_info
             .entry(drv_name.to_string())
             .or_default()
-            .push((&build.flake_ref, &build.derivation));
+            .push((&build.flake_ref, &build.derivation, build.branch.as_deref()));
     }
 
     if current_hashes.is_empty() {
@@ -1415,14 +1415,14 @@ fn find_historical_builds(nix: &str, current_builds: &[Build]) -> Vec<Build> {
         let short_hash = &drv_hash[..std::cmp::min(7, drv_hash.len())];
 
         // Emit a Build for each flake attribute that maps to this drv name
-        for (flake_ref, derivation_attr) in &attrs {
+        for (flake_ref, derivation_attr, branch) in &attrs {
             historical_builds.push(Build {
                 id: 0, // Will be reassigned later
                 derivation: derivation_attr.to_string(),
                 status: status.clone(),
                 duration: "—".to_string(),
                 time: time_str.clone(),
-                branch: Some("historical".to_string()),
+                branch: branch.map(|s| s.to_string()),
                 commit: format!("{}…{}", short_hash, drv_name),
                 owner: None,
                 repo: None,
@@ -1651,15 +1651,13 @@ fn resolve_historical_commits(nix: &str, builds: &mut [Build], metadata: &FlakeM
                     );
 
                     for &idx in indices {
-                        let was_different = builds[idx].commit != *commit;
                         builds[idx].commit = commit.to_string();
                         builds[idx].forge_url = forge_url.clone();
                         builds[idx].owner = owner.clone();
                         builds[idx].repo = repo.clone();
-                        // Mark as "historical" branch if resolved to a different commit
-                        if was_different {
-                            builds[idx].branch = Some("historical".to_string());
-                        }
+                        // Keep original branch — the `historical` bool already marks these.
+                        // This lets ancestor commits stay grouped under their branch
+                        // (e.g. refs/heads/v9) while showing distinct commit SHAs.
                     }
 
                     unresolved_hashes.remove(result_hash);

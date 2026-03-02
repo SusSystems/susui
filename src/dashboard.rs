@@ -669,7 +669,7 @@ function DrvGroup({ group, expandedBuild, onToggle, onFullLog, historicalByDeriv
 
 // ─── COMMIT GROUP ──────────────────────────────────────────
 function CommitGroup({ commit, branch, owner, repo, forgeUrl, flakeRef, builds, expandedBuild, onToggle, onFullLog, historicalByDerivation }) {
-  const isHistorical = branch === "historical";
+  const isHistorical = builds.every(b => b.historical);
   const isDirty = builds.some(b => b.dirty);
   const shortSha = commit ? commit.slice(0, 7) : "—";
   const isRealCommit = commit && commit.length === 40 && /^[0-9a-f]+$/.test(commit);
@@ -958,8 +958,8 @@ function App() {
     return groups;
   }, [filtered]);
 
-  const currentGroups = useMemo(() => grouped.filter(g => g.branch !== "historical"), [grouped]);
-  const historicalGroups = useMemo(() => grouped.filter(g => g.branch === "historical"), [grouped]);
+  const currentGroups = useMemo(() => grouped.filter(g => g.builds.some(b => !b.historical)), [grouped]);
+  const historicalGroups = useMemo(() => grouped.filter(g => g.builds.every(b => b.historical)), [grouped]);
   const historicalByDerivation = useMemo(() => {
     const map = {};
     builds.filter(b => b.historical).forEach(b => {
